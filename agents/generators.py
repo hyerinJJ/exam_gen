@@ -92,6 +92,15 @@ def _extract_json(raw: str) -> str:
     return raw
 
 
+def _adjust_count(result: list, expected: int, name: str) -> list:
+    """개수 불일치 최종 보정: 초과 시 자르기, 부족 시 경고 후 그대로."""
+    if len(result) > expected:
+        return result[:expected]
+    if len(result) < expected:
+        print(f"[{name}] 경고: {len(result)}/{expected}개 생성됨 (부족)")
+    return result
+
+
 def _renumber(questions: list, prefix: str, start: int) -> list:
     for i, q in enumerate(questions):
         q["id"] = f"{prefix}{start + i}"
@@ -110,16 +119,24 @@ class ShortAnswerGenerator(BaseAgentWorker):
 
     def run(self, input_text: str) -> str:
         data = json.loads(input_text)
-        prompt = SHORT_PROMPT.format(
-            topics=", ".join(data["topics"]),
-            count=data["count"],
-            difficulty=data.get("difficulty", "mixed"),
-            scope_line=_scope_line(data),
-        )
-        response = retry_call(lambda: self._client.models.generate_content(model=FLASH_LITE, contents=prompt))
-        raw = _extract_json(response.text.strip())
-        json.loads(raw)
-        return raw
+        expected = data["count"]
+        result = None
+        for attempt in range(2):
+            prompt = SHORT_PROMPT.format(
+                topics=", ".join(data["topics"]),
+                count=expected,
+                difficulty=data.get("difficulty", "mixed"),
+                scope_line=_scope_line(data),
+            )
+            response = retry_call(lambda: self._client.models.generate_content(model=FLASH_LITE, contents=prompt))
+            raw = _extract_json(response.text.strip())
+            result = json.loads(raw)
+            if len(result) == expected:
+                return raw
+            if attempt == 0:
+                print(f"[{self.name}] 개수 불일치 ({len(result)}/{expected}), 재시도")
+        result = _adjust_count(result, expected, self.name)
+        return json.dumps(result, ensure_ascii=False)
 
 
 class EssayGenerator(BaseAgentWorker):
@@ -129,16 +146,24 @@ class EssayGenerator(BaseAgentWorker):
 
     def run(self, input_text: str) -> str:
         data = json.loads(input_text)
-        prompt = ESSAY_PROMPT.format(
-            topics=", ".join(data["topics"]),
-            count=data["count"],
-            difficulty=data.get("difficulty", "mixed"),
-            scope_line=_scope_line(data),
-        )
-        response = retry_call(lambda: self._client.models.generate_content(model=FLASH_LITE, contents=prompt))
-        raw = _extract_json(response.text.strip())
-        json.loads(raw)
-        return raw
+        expected = data["count"]
+        result = None
+        for attempt in range(2):
+            prompt = ESSAY_PROMPT.format(
+                topics=", ".join(data["topics"]),
+                count=expected,
+                difficulty=data.get("difficulty", "mixed"),
+                scope_line=_scope_line(data),
+            )
+            response = retry_call(lambda: self._client.models.generate_content(model=FLASH_LITE, contents=prompt))
+            raw = _extract_json(response.text.strip())
+            result = json.loads(raw)
+            if len(result) == expected:
+                return raw
+            if attempt == 0:
+                print(f"[{self.name}] 개수 불일치 ({len(result)}/{expected}), 재시도")
+        result = _adjust_count(result, expected, self.name)
+        return json.dumps(result, ensure_ascii=False)
 
 
 class ApplicationGenerator(BaseAgentWorker):
@@ -181,14 +206,23 @@ class ApplicationGenerator(BaseAgentWorker):
 
         search_results = f"[arXiv]\n{arxiv_results}\n\n[Google]\n{google_results}"
 
-        prompt = APPLICATION_PROMPT.format(
-            topics=", ".join(topics),
-            count=data["count"],
-            difficulty=data.get("difficulty", "mixed"),
-            scope_line=_scope_line(data),
-            search_results=search_results,
-        )
-        response = retry_call(lambda: self._client.models.generate_content(model=FLASH, contents=prompt))
-        raw = _extract_json(response.text.strip())
-        json.loads(raw)
-        return raw
+        # 검색은 한 번만, LLM 생성만 재시도
+        expected = data["count"]
+        result = None
+        for attempt in range(2):
+            prompt = APPLICATION_PROMPT.format(
+                topics=", ".join(topics),
+                count=expected,
+                difficulty=data.get("difficulty", "mixed"),
+                scope_line=_scope_line(data),
+                search_results=search_results,
+            )
+            response = retry_call(lambda: self._client.models.generate_content(model=FLASH, contents=prompt))
+            raw = _extract_json(response.text.strip())
+            result = json.loads(raw)
+            if len(result) == expected:
+                return raw
+            if attempt == 0:
+                print(f"[{self.name}] 개수 불일치 ({len(result)}/{expected}), 재시도")
+        result = _adjust_count(result, expected, self.name)
+        return json.dumps(result, ensure_ascii=False)

@@ -40,13 +40,32 @@ ESSAY_PROMPT = f"""{_CORE_PRINCIPLE}
 APPLICATION_PROMPT = f"""{_CORE_PRINCIPLE}
 {_NO_MARKDOWN}
 
-시나리오 재서술 금지. 질문에만 집중하라.
-참고 자료는 답변을 뒷받침하는 경우에만 간결하게 인용하라.
+답안 작성 원칙:
+- 답안의 핵심은 반드시 수업에서 배운 개념, 이론, 프레임워크를 시나리오에 적용하는 것이다.
+- 참고 자료(arXiv, Google)는 현실 사례나 배경 맥락 확인용으로만 참고하라.
+  참고 자료에서만 나오는 내용을 답안의 근거로 쓰지 마라.
+- 시나리오 재서술 금지. 질문에만 집중하라.
 
 참고 자료:
 {{search_results}}
 
 문제: {{question}}"""
+
+APPLICATION_RUBRIC_PROMPT = f"""응용형 문제의 채점 기준을 작성하세요.
+{_NO_MARKDOWN}
+
+채점 원칙: 외부 자료나 최신 사례를 아는지가 아니라,
+수업에서 배운 개념·이론·프레임워크를 시나리오에 얼마나 올바르게 적용했는지를 평가한다.
+
+채점 포인트 3~4개를 추출하고 각 포인트에 점수를 부여하세요. 합계 10점.
+반드시 아래 형식으로만 출력하세요. 다른 텍스트 없이.
+
+[포인트 1]: 수업 개념/프레임워크 적용 내용 (N점)
+[포인트 2]: 수업 개념/프레임워크 적용 내용 (N점)
+[포인트 3]: 수업 개념/프레임워크 적용 내용 (N점)
+
+문제: {{question}}
+모범답안: {{answer}}"""
 
 RUBRIC_PROMPT = f"""문제와 모범답안을 보고 채점 기준을 작성하세요.
 {_NO_MARKDOWN}
@@ -135,7 +154,9 @@ class AnswerGeneratorAgent(BaseAgentWorker):
         )
         response = retry_call(lambda: self._client.models.generate_content(model=FLASH, contents=prompt))
         answer = response.text.strip()
-        rubric = self._generate_rubric(question["question"], answer)
+        rubric_prompt = APPLICATION_RUBRIC_PROMPT.format(question=question["question"], answer=answer)
+        rubric_response = retry_call(lambda: self._client.models.generate_content(model=FLASH_LITE, contents=rubric_prompt))
+        rubric = rubric_response.text.strip()
         return {"answer": answer, "rubric": rubric}
 
     def _generate_answer(self, question: dict) -> dict:
