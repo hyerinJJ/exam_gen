@@ -32,10 +32,11 @@
 - 그 외 → 기본형 + flash-lite
 - 출력: [{"id", "type", "question", "answer"}] JSON
 
-## quality_reviewer (ReAct+HITL, flash)
-- AI 1차 평가 후 콘솔 출력
-- input()으로 교수자 입력: p(통과)/i(개별)/r(전체재생성)
-- 출력: {"decision": "pass/individual/regenerate", "feedback": "...", "problem_ids": [...]}
+## quality_reviewer (기본형+HITL+반사형 라우터, flash)
+- AI 자동 평가: 마크다운, 단답형 형식, 에세이형 열린 질문, 응용형 시나리오, 문제 개수 검토
+- 문제 발견 시 해당 문제만 유형별 generator로 자동 재생성 (반사형 라우터)
+- 입력: {"questions": [...], "plan": {...}} JSON
+- 출력: {"pass": bool, "issues": [{"id", "type", "reason"}]} JSON
 
 ## refiner (성찰형, flash)
 - 입력: {"problem": {...}, "feedback": "..."} JSON

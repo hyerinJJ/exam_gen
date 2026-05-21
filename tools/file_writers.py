@@ -1,54 +1,28 @@
 import json
 import os
 from docx import Document
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt, Cm, RGBColor
 from docx.oxml.ns import qn
-from tools.client import get_client, retry_call
+from docx.oxml import OxmlElement
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-FLASH_LITE = "gemini-2.5-flash-lite"
-
-_FORMAT_PROMPT = """다음 시험지 요구사항 목록을 분석하여 포맷 지시사항 JSON을 반환하세요.
-마크다운 기호(**,##,*,#,__)를 절대 사용하지 마시오.
-다른 텍스트 없이 JSON만 출력하세요.
-
-요구사항:
-{reqs}
-
-반환 형식:
-{{
-  "page_break_per_question": true 또는 false,
-  "has_cover": true 또는 false,
-  "cover_items": ["표지에 들어갈 텍스트 항목들 (제목, 정직서약문 전문 등)"],
-  "header_notes": ["시험지 상단 안내사항들"]
-}}"""
-
-_format_cache: dict = {}
+_PAGE_BREAK_KEYWORDS = ("1개", "한 페이지", "페이지당 1", "하나당", "1문제")
 
 
-def _interpret_format_reqs(extra_reqs: list) -> dict:
-    """기타요구사항을 LLM으로 해석해 포맷 결정 dict 반환. 동일 입력은 캐시 사용."""
-    default = {"page_break_per_question": False, "has_cover": False, "cover_items": [], "header_notes": []}
-    if not extra_reqs:
-        return default
+def _interpret_format(plan: dict) -> dict:
+    """planner 출력 JSON에서 표지 포맷 정보를 직접 추출. LLM 호출 없음."""
+    if not plan:
+        return {"title": None, "course_info": None, "professor": None, "page_break_per_question": False}
 
-    cache_key = tuple(extra_reqs)
-    if cache_key in _format_cache:
-        return _format_cache[cache_key]
+    layout = str(plan.get("레이아웃") or "").lower()
+    page_break = any(kw in layout for kw in _PAGE_BREAK_KEYWORDS)
 
-    reqs_text = "\n".join(f"- {r}" for r in extra_reqs)
-    prompt = _FORMAT_PROMPT.format(reqs=reqs_text)
-    client = get_client()
-    response = retry_call(lambda: client.models.generate_content(model=FLASH_LITE, contents=prompt))
-    raw = response.text.strip()
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
-    result = {**default, **json.loads(raw)}
-    _format_cache[cache_key] = result
-    return result
+    return {
+        "title": plan.get("시험제목") or None,
+        "course_info": plan.get("시험종류") or None,
+        "professor": plan.get("담당교수") or None,
+        "page_break_per_question": page_break,
+    }
 
 
 def _set_font(run, size: int = 12, bold: bool = False):
@@ -74,29 +48,88 @@ def _add_body(doc: Document, text: str, size: int = 12):
     return p
 
 
+def _add_center(doc: Document, text: str, size: int = 12, bold: bool = False):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(text)
+    _set_font(run, size=size, bold=bold)
+    return p
+
+
+def _add_horizontal_line(doc: Document):
+    p = doc.add_paragraph()
+    pPr = p._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "6")
+    bottom.set(qn("w:space"), "1")
+    bottom.set(qn("w:color"), "000000")
+    pBdr.append(bottom)
+    pPr.append(pBdr)
+    return p
+
+
+def _add_cover_page(doc: Document, fmt: dict):
+    # 로고 자리 (빈 공간)
+    for _ in range(5):
+        doc.add_paragraph()
+
+    # 시험지 제목
+    title = fmt.get("title") or "시험지"
+    _add_center(doc, title, size=24, bold=True)
+    doc.add_paragraph()
+
+    # 학수번호 / 학년도 학기 / 시험 종류
+    course_info = fmt.get("course_info") or ""
+    _add_center(doc, course_info, size=14)
+    doc.add_paragraph()
+
+    # 담당교수 / 날짜
+    professor = fmt.get("professor") or ""
+    prof_label = f"담당교수: {professor}" if professor else "담당교수:"
+    _add_center(doc, f"{prof_label}                    날짜:", size=12)
+    doc.add_paragraph()
+
+    _add_horizontal_line(doc)
+    doc.add_paragraph()
+
+    # 성적 정직 서약
+    _add_center(doc, "성적 정직 서약", size=14, bold=True)
+    doc.add_paragraph()
+    _add_center(doc, "본인은 이 시험에서 어떠한 부정행위도 하지 않을 것을 서약합니다.", size=12)
+    doc.add_paragraph()
+
+    _add_body(doc, "학번: _______________________", size=12)
+    _add_body(doc, "이름: _______________________", size=12)
+    _add_body(doc, "서명: _______________________", size=12)
+    doc.add_paragraph()
+
+    _add_horizontal_line(doc)
+    doc.add_page_break()
+
+
 TYPE_KO = {"short": "단답형", "essay": "에세이형", "application": "응용형"}
 
 
-def save_exam_docx(questions: list, output_path: str, extra_reqs: list = None) -> None:
+def _set_margins(doc: Document, cm: float = 2.5):
+    section = doc.sections[0]
+    for attr in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
+        setattr(section, attr, Cm(cm))
+
+
+def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-    fmt = _interpret_format_reqs(extra_reqs or [])
+    fmt = _interpret_format(plan or {})
     doc = Document()
+    _set_margins(doc)
 
-    # 표지
-    if fmt["has_cover"]:
-        for item in fmt["cover_items"]:
-            _add_body(doc, item, size=12)
-        doc.add_page_break()
+    # 표지 (항상 추가)
+    _add_cover_page(doc, fmt)
 
     _add_heading(doc, "시험 문제", size=16)
     doc.add_paragraph()
-
-    # 상단 안내사항
-    for note in fmt["header_notes"]:
-        _add_body(doc, note, size=11)
-    if fmt["header_notes"]:
-        doc.add_paragraph()
 
     page_break = fmt["page_break_per_question"]
     for i, q in enumerate(questions, start=1):
@@ -114,6 +147,7 @@ def save_exam_docx(questions: list, output_path: str, extra_reqs: list = None) -
 def save_answer_key_docx(qa_pairs: list, output_path: str) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     doc = Document()
+    _set_margins(doc)
 
     _add_heading(doc, "모범 답안", size=16)
     doc.add_paragraph()

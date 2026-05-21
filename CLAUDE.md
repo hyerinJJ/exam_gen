@@ -28,7 +28,7 @@ exam_gen/
 | short/essay generator | 기본형 | flash-lite | 없음 |
 | application generator | ReAct | flash | Google Search + arXiv |
 | answer_generator | 기본형/ReAct | flash-lite/flash | 라우팅 |
-| quality_reviewer | ReAct+HITL | flash | 없음 |
+| quality_reviewer | 기본형+HITL+반사형 라우터 | flash | 없음 |
 | refiner | 성찰형 | flash | 없음 |
 | assembler | 반사형 | 없음 | python-docx |
 
