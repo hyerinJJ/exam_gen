@@ -1,0 +1,8 @@
+google-genai
+pypdf
+python-pptx
+openai-whisper
+arxiv
+python-docx
+requests
+python-dotenv
