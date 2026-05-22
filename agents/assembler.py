@@ -18,18 +18,20 @@ class AssemblerAgent(BaseAgentWorker):
         exam_path = os.path.join(OUTPUT_DIR, "exam.docx")
         answer_path = os.path.join(OUTPUT_DIR, "answer_key.docx")
 
-        for save_fn, args, label in [
-            (save_exam_docx,      (qa_pairs, exam_path),   exam_path),
-            (save_answer_key_docx,(qa_pairs, answer_path), answer_path),
-        ]:
-            kwargs = {"plan": plan} if save_fn is save_exam_docx else {}
+        print(f"[Assembler] plan 전달 확인: {plan}")
+
+        def _save_with_retry(fn, *args, **kwargs):
+            label = args[1] if len(args) > 1 else ""
             while True:
                 try:
-                    save_fn(*args, **kwargs)
+                    fn(*args, **kwargs)
                     break
                 except PermissionError:
                     print(f"{label} 이(가) 열려 있습니다. 파일을 닫은 후 엔터를 누르세요.")
                     input()
+
+        _save_with_retry(save_exam_docx, qa_pairs, exam_path, plan=plan)
+        _save_with_retry(save_answer_key_docx, qa_pairs, answer_path)
 
         result = {
             "exam": os.path.abspath(exam_path),

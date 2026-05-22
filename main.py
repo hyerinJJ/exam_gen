@@ -49,10 +49,8 @@ def _generate_questions(topics: list, plan: dict) -> list:
 
 
 def _generate_answers(questions: list) -> list:
-    """단답형+에세이형 병렬 / 응용형 순차로 모범답안 생성."""
-    se_count = sum(1 for q in questions if q.get("type") != "application")
-    app_count = sum(1 for q in questions if q.get("type") == "application")
-    print(f"  단답형+에세이형 {se_count}개 병렬, 응용형 {app_count}개 순차")
+    """모든 유형 병렬로 모범답안 생성."""
+    print(f"  전체 {len(questions)}개 병렬 생성")
     answer_gen = AnswerGeneratorAgent()
     return json.loads(answer_gen.run(json.dumps(questions, ensure_ascii=False)))
 
@@ -117,7 +115,21 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
     print("\n=== [Step 2] 문제 계획 ===")
     planner = PlannerAgent()
     plan = json.loads(planner.run(f"토픽: {topics}\n요구사항: {requirements}"))
-    print(f"  계획: {plan}")
+
+    _COUNT_KEYS = {"단답형", "에세이형", "응용형", "난이도"}
+    _FORMAT_KEYS = {"시험제목", "시험종류", "담당교수", "레이아웃"}
+
+    count_parts = [f"단답형 {plan.get('단답형', 0)}개", f"에세이형 {plan.get('에세이형', 0)}개",
+                   f"응용형 {plan.get('응용형', 0)}개", f"난이도: {plan.get('난이도', 'mixed')}"]
+    print(f"  문제 구성: {' | '.join(count_parts)}")
+
+    fmt_parts = [f"{k}={plan[k]}" for k in _FORMAT_KEYS if k in plan]
+    if fmt_parts:
+        print(f"  포맷 설정: {' | '.join(fmt_parts)}")
+
+    etc_parts = [f"{k}={v}" for k, v in plan.items() if k not in _COUNT_KEYS and k not in _FORMAT_KEYS]
+    if etc_parts:
+        print(f"  기타 요구사항: {' | '.join(etc_parts)}")
 
     print("\n=== [Step 3] 문제 병렬 생성 ===")
     questions = _generate_questions(topics, plan)
@@ -128,14 +140,18 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
 
     print("\n=== [Step 5] AI 품질 검토 ===")
     reviewer = QualityReviewerAgent()
-    review = json.loads(reviewer.run(json.dumps({"questions": qa_pairs, "plan": plan}, ensure_ascii=False)))
-    if review["pass"]:
-        print("  품질 검토 통과.")
-    else:
+    for attempt in range(1, 4):
+        review = json.loads(reviewer.run(json.dumps({"questions": qa_pairs, "plan": plan}, ensure_ascii=False)))
+        if review["pass"]:
+            print(f"  품질 검토 통과. (시도 {attempt}회)")
+            break
         issues = review.get("issues", [])
-        print(f"  품질 문제 발견 ({len(issues)}개): {[i['id'] for i in issues]}")
+        print(f"  [시도 {attempt}/3] 품질 문제 발견 ({len(issues)}개): {[i['id'] for i in issues]}")
         for issue in issues:
             print(f"    {issue['id']}: {issue.get('reason', '')}")
+        if attempt == 3:
+            print("  최대 재시도 횟수 도달. 현재 상태로 진행합니다.")
+            break
         print("  자동 재생성 중...")
         qa_pairs = _auto_fix_questions(qa_pairs, issues, topics, plan)
 
