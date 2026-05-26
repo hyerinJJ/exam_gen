@@ -1,8 +1,6 @@
 import json
 from agents.base import BaseAgentWorker
-from tools.client import get_client, retry_call
-
-MODEL = "gemini-2.5-flash-lite"
+from tools.claude_client import claude_generate_text
 
 _IMPORTANCE_VALUES = {"high", "medium", "low"}
 _SCOPE_VALUES = {"core", "detail", "example", "background"}
@@ -26,6 +24,7 @@ PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제
 - 단답형 후보: 핵심 수치·약어·용어 중 의미를 응축한 것 7개 이상
 - 서술형 후보: 두 개념 이상이 연결되는 지점
 - 응용형 후보: 프레임워크를 새로운 맥락에 적용할 수 있는 상황
+- 진위형 후보: 강의에서 명시적으로 경계한 오해, 혼동되기 쉬운 개념쌍
 
 [STEP 4] 토픽 분석 관점 적용
 각 토픽에 대해 아래 7가지 관점을 평가할 것:
@@ -63,6 +62,12 @@ PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제
       "importance": "high",
       "difficulty": "easy"
     }}
+  ],
+  "tf_misconceptions": [
+    "강의에서 경계한 오해 예시"
+  ],
+  "concept_pairs": [
+    {{"a": "개념A", "b": "개념B", "relation": "대비"}}
   ]
 }}
 
@@ -78,6 +83,8 @@ PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제
   type 허용값: definition / term / number / abbreviation / formula / principle
   importance 허용값: high / medium / low
   difficulty 허용값: easy / medium / hard
+- tf_misconceptions: STEP 3 진위형 후보 중 강의에서 명시적으로 경계한 오해 목록. 문자열 배열. 없으면 빈 배열.
+- concept_pairs: 대비되거나 혼동되기 쉬운 개념쌍. 각 항목은 {{"a", "b", "relation"}} 객체. 없으면 빈 배열.
 
 강의자료:
 {text}"""
@@ -116,6 +123,10 @@ def _normalize_concept(concept: dict) -> dict:
 def _validate_and_normalize(data: dict) -> dict:
     if not isinstance(data.get("topics"), list) or not isinstance(data.get("key_concepts"), list):
         raise ValueError("Invalid topic extraction JSON: missing topics or key_concepts array")
+    if not isinstance(data.get("tf_misconceptions"), list):
+        data["tf_misconceptions"] = []
+    if not isinstance(data.get("concept_pairs"), list):
+        data["concept_pairs"] = []
     for i, topic in enumerate(data["topics"]):
         if not isinstance(topic, dict) or "name" not in topic:
             raise ValueError(f"Invalid topic extraction JSON: topics[{i}] is not a valid object")
@@ -130,15 +141,10 @@ def _validate_and_normalize(data: dict) -> dict:
 class TopicExtractorAgent(BaseAgentWorker):
     def __init__(self):
         super().__init__(name="Topic Extractor", task_id="Task 1")
-        self._client = get_client()
 
     def run(self, input_text: str) -> str:
         prompt = PROMPT_TEMPLATE.format(text=input_text)
-        response = retry_call(lambda: self._client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-        ))
-        raw = response.text.strip()
+        raw = claude_generate_text(prompt)
         # JSON 블록 추출
         if "```" in raw:
             raw = raw.split("```")[1]

@@ -20,7 +20,7 @@ _CONTENT_W = 16.0  # A4(21cm) - 여백 2.5cm×2
 
 TYPE_KO = {
     "short": "단답형", "essay": "에세이형", "application": "응용형",
-    "list": "나열형", "order": "순서형",
+    "tf": "진위형", "list": "나열형", "order": "순서형",
 }
 
 
@@ -439,6 +439,18 @@ def _add_section_header(doc, section_name: str, score_note: str):
 
 def _add_answer_box(doc, question: dict):
     q_type = question.get("type", "short")
+    if q_type == "tf":
+        table = _make_table(doc, 1, 2, width_cm=8.0, center=False)
+        _set_table_borders(table, val="single", sz="4", color=RULE)
+        for ci, label in enumerate(("T (참)", "F (거짓)")):
+            cell = table.cell(0, 0) if ci == 0 else table.cell(0, 1)
+            _set_cell_width(cell, 4.0)
+            _set_row_height(table.rows[0], 1.2)
+            set_cell_shading(cell, OFFWHITE)
+            _cp(cell, label, size=11, bold=True, color=DARK,
+                align=WD_ALIGN_PARAGRAPH.CENTER, sb=4, sa=4)
+        doc.add_paragraph()
+        return
     if q_type == "short":
         row_count = 1
     elif q_type == "application":

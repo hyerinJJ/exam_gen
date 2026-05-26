@@ -50,13 +50,8 @@ SAMPLE_OUTPUT = {
 
 
 def _run_extractor(output_dict, raw_text=None):
-    mock_response = MagicMock()
-    mock_response.text = raw_text if raw_text is not None else json.dumps(output_dict, ensure_ascii=False)
-    mock_client = MagicMock()
-    mock_client.models.generate_content.return_value = mock_response
-
-    with patch("agents.topic_extractor.get_client", return_value=mock_client), \
-         patch("agents.topic_extractor.retry_call", side_effect=lambda fn: fn()):
+    text = raw_text if raw_text is not None else json.dumps(output_dict, ensure_ascii=False)
+    with patch("agents.topic_extractor.claude_generate_text", return_value=text):
         from agents.topic_extractor import TopicExtractorAgent
         agent = TopicExtractorAgent()
         return json.loads(agent.run("샘플 강의 텍스트"))
@@ -278,19 +273,12 @@ _SAMPLE_PLAN_ITEMS = [
 
 
 def _captured_prompt(generator_cls, plan_items, module_path):
-    """mock client로 generator를 실행하고 LLM에 전달된 프롬프트를 반환."""
-    mock_response = MagicMock()
-    mock_response.text = json.dumps([{"id": "Q1", "type": "short", "question": "테스트 문제?"}])
-    mock_client = MagicMock()
-    mock_client.models.generate_content.return_value = mock_response
-
-    with patch(f"{module_path}.get_client", return_value=mock_client), \
-         patch(f"{module_path}.retry_call", side_effect=lambda fn: fn()):
+    """mock으로 generator를 실행하고 LLM에 전달된 프롬프트를 반환."""
+    mock_text = json.dumps([{"id": "Q1", "type": "short", "question": "테스트 문제?"}])
+    with patch(f"{module_path}.claude_generate_text", return_value=mock_text) as mock_claude:
         agent = generator_cls()
         agent.run(json.dumps({"plan_items": plan_items}))
-
-    all_calls = mock_client.models.generate_content.call_args_list
-    return " ".join(str(call.kwargs.get("contents", "")) for call in all_calls)
+    return " ".join(str(call.args[0]) for call in mock_claude.call_args_list)
 
 
 def test_short_generator_prompt_contains_metadata():
@@ -316,19 +304,127 @@ def test_essay_generator_prompt_contains_metadata():
             },
         }
     ]
-    mock_response = MagicMock()
-    mock_response.text = json.dumps([{"id": "Q1", "type": "essay", "question": "테스트?"}])
-    mock_client = MagicMock()
-    mock_client.models.generate_content.return_value = mock_response
-
-    with patch("agents.generators.get_client", return_value=mock_client), \
-         patch("agents.generators.retry_call", side_effect=lambda fn: fn()):
+    mock_text = json.dumps([{"id": "Q1", "type": "essay", "question": "테스트?"}])
+    with patch("agents.generators.claude_generate_text", return_value=mock_text) as mock_claude:
         from agents.generators import EssayGenerator
         agent = EssayGenerator()
         agent.run(json.dumps({"plan_items": essay_plan}))
 
-    all_prompts = " ".join(
-        str(call.kwargs.get("contents", "")) for call in mock_client.models.generate_content.call_args_list
-    )
+    all_prompts = " ".join(str(call.args[0]) for call in mock_claude.call_args_list)
     assert "경사하강법" in all_prompts
     assert "causal" in all_prompts or "abstract" in all_prompts
+
+
+# ── TF 관련 테스트 ────────────────────────────────────────────────────────────
+
+_SAMPLE_OUTPUT_WITH_TF = {
+    **SAMPLE_OUTPUT,
+    "tf_misconceptions": ["머신러닝은 항상 지도학습을 기반으로 한다"],
+    "concept_pairs": [{"a": "지도학습", "b": "비지도학습", "relation": "대비"}],
+}
+
+_CONCRETE_TOPIC = {
+    "name": "구체 개념",
+    "importance": "high", "scope": "core",
+    "specificity": "concrete", "cognitive_type": "comparative",
+    "difficulty": "medium", "sequence_dependency": False,
+    "exam_suitability": {"short_answer": 0.5, "essay": 0.4, "application": 0.5},
+    "reason": "구체 사실 확인",
+}
+
+
+def test_extractor_tf_fields():
+    """topic_extractor 출력에 tf_misconceptions과 concept_pairs가 리스트로 포함되어야 함."""
+    result = _run_extractor(_SAMPLE_OUTPUT_WITH_TF)
+    assert isinstance(result["tf_misconceptions"], list)
+    assert isinstance(result["concept_pairs"], list)
+    assert len(result["tf_misconceptions"]) > 0
+    assert len(result["concept_pairs"]) > 0
+
+
+def test_extractor_tf_fields_default_empty():
+    """tf_misconceptions/concept_pairs가 없으면 빈 리스트로 정규화되어야 함."""
+    result = _run_extractor(SAMPLE_OUTPUT)
+    assert isinstance(result["tf_misconceptions"], list)
+    assert isinstance(result["concept_pairs"], list)
+
+
+def test_planner_tf_plan():
+    """진위형 count가 있으면 question_type='tf' 항목이 생성되어야 함."""
+    from agents.planner import _build_plan_items
+    topics = [_CONCRETE_TOPIC, _NUMERICAL_TOPIC]
+    counts = {"단답형": 0, "에세이형": 0, "응용형": 0, "진위형": 3, "난이도": "mixed"}
+    plan = _build_plan_items(topics, [], counts)
+    tf_items = [item for item in plan if item["question_type"] == "tf"]
+    assert len(tf_items) == 3
+    for item in tf_items:
+        assert "intended_answer" in item
+        assert item["intended_answer"] in ("T", "F")
+        assert "tf_type" in item
+
+
+def test_planner_tf_tf_ratio():
+    """T:F 비율이 대략 35:65를 따라야 함 (10개 기준)."""
+    from agents.planner import _build_plan_items
+    topics = [_CONCRETE_TOPIC, _NUMERICAL_TOPIC]
+    counts = {"단답형": 0, "에세이형": 0, "응용형": 0, "진위형": 10, "난이도": "mixed"}
+    plan = _build_plan_items(topics, [], counts)
+    tf_items = [item for item in plan if item["question_type"] == "tf"]
+    t_count = sum(1 for i in tf_items if i["intended_answer"] == "T")
+    f_count = sum(1 for i in tf_items if i["intended_answer"] == "F")
+    assert t_count <= 4 and f_count >= 6
+
+
+def test_tf_generator_type():
+    """TFGenerator 출력의 모든 항목이 type='tf'여야 함."""
+    mock_text = json.dumps([
+        {"id": "Q1", "type": "tf", "question": "머신러닝은 데이터에서 패턴을 학습한다. (T/F)"},
+        {"id": "Q2", "type": "tf", "question": "비지도학습은 레이블이 필요하다. (T/F)"},
+    ])
+    with patch("agents.generators.claude_generate_text", return_value=mock_text):
+        from agents.generators import TFGenerator
+        agent = TFGenerator()
+        result = json.loads(agent.run(json.dumps({"topics": ["머신러닝"], "count": 2, "difficulty": "medium"})))
+    assert all(q["type"] == "tf" for q in result)
+
+
+def test_tf_question_format():
+    """TFGenerator 출력의 문제는 '(T/F)'로 끝나야 함."""
+    mock_text = json.dumps([
+        {"id": "Q1", "type": "tf", "question": "머신러닝은 데이터에서 패턴을 학습한다. (T/F)"},
+    ])
+    with patch("agents.generators.claude_generate_text", return_value=mock_text):
+        from agents.generators import TFGenerator
+        agent = TFGenerator()
+        result = json.loads(agent.run(json.dumps({"topics": ["머신러닝"], "count": 1, "difficulty": "medium"})))
+    assert result[0]["question"].strip().endswith("(T/F)")
+
+
+def test_tf_answer_normalize():
+    """_normalize_tf_answer가 다양한 입력을 T 또는 F로 정규화해야 함."""
+    from agents.answer_generator import _normalize_tf_answer
+    assert _normalize_tf_answer("T") == "T"
+    assert _normalize_tf_answer("TRUE") == "T"
+    assert _normalize_tf_answer("참") == "T"
+    assert _normalize_tf_answer("O") == "T"
+    assert _normalize_tf_answer("F") == "F"
+    assert _normalize_tf_answer("FALSE") == "F"
+    assert _normalize_tf_answer("거짓") == "F"
+    assert _normalize_tf_answer("X") == "F"
+    assert _normalize_tf_answer("  t  ") == "T"
+    assert _normalize_tf_answer("True (참)") == "T"
+
+
+def test_quality_reviewer_tf_criteria():
+    """REVIEW_PROMPT에 진위형 검토 기준이 포함되어야 함."""
+    from agents.quality_reviewer import REVIEW_PROMPT
+    assert "진위형" in REVIEW_PROMPT
+    assert "(T/F)" in REVIEW_PROMPT
+    assert "단일 명제" in REVIEW_PROMPT
+
+
+def test_file_writers_tf_type():
+    """TYPE_KO에 'tf' 키가 '진위형'으로 등록되어야 함."""
+    from tools.file_writers import TYPE_KO
+    assert "tf" in TYPE_KO
+    assert TYPE_KO["tf"] == "진위형"

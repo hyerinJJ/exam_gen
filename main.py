@@ -6,14 +6,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from agents.collector import CollectorAgent
 from agents.topic_extractor import TopicExtractorAgent
 from agents.planner import PlannerAgent
-from agents.generators import ShortAnswerGenerator, EssayGenerator, ApplicationGenerator
+from agents.generators import ShortAnswerGenerator, EssayGenerator, ApplicationGenerator, TFGenerator
 from agents.answer_generator import AnswerGeneratorAgent
 from agents.quality_reviewer import QualityReviewerAgent
 from agents.refiner import RefinerAgent
 from agents.assembler import AssemblerAgent
 
 
-_FIXED_PLAN_KEYS = {"단답형", "에세이형", "응용형", "난이도"}
+_FIXED_PLAN_KEYS = {"단답형", "에세이형", "응용형", "진위형", "난이도"}
 
 
 def _generate_questions(topics: list, plan: dict) -> list:
@@ -23,16 +23,18 @@ def _generate_questions(topics: list, plan: dict) -> list:
     question_plan = plan.get("question_plan", [])
 
     results = []
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         if question_plan:
             # 신형: planner가 question_plan을 생성한 경우 plan_items 형식 사용
             short_items = [p for p in question_plan if p["question_type"] == "short_answer"]
             essay_items = [p for p in question_plan if p["question_type"] == "essay"]
             app_items   = [p for p in question_plan if p["question_type"] == "application"]
+            tf_items    = [p for p in question_plan if p["question_type"] == "tf"]
             tasks_new = [
                 (ShortAnswerGenerator(), short_items),
                 (EssayGenerator(),       essay_items),
                 (ApplicationGenerator(), app_items),
+                (TFGenerator(),          tf_items),
             ]
             futures = {
                 executor.submit(
@@ -49,6 +51,7 @@ def _generate_questions(topics: list, plan: dict) -> list:
                 (ShortAnswerGenerator(), plan.get("단답형", 0)),
                 (EssayGenerator(),       plan.get("에세이형", 0)),
                 (ApplicationGenerator(), plan.get("응용형", 0)),
+                (TFGenerator(),          plan.get("진위형", 0)),
             ]
             futures = {
                 executor.submit(
@@ -88,6 +91,7 @@ def _auto_fix_questions(qa_pairs: list, issues: list, topics: list, plan: dict) 
         "short": ShortAnswerGenerator(),
         "essay": EssayGenerator(),
         "application": ApplicationGenerator(),
+        "tf": TFGenerator(),
     }
     answer_gen = AnswerGeneratorAgent()
     id_to_idx = {qa["id"]: i for i, qa in enumerate(qa_pairs)}
@@ -135,7 +139,8 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
     extractor = TopicExtractorAgent()
     topic_data = json.loads(extractor.run(raw_text))
     topics = topic_data.get("topics", [])
-    print(f"  토픽: {topics}")
+    topic_names = [t.get("name", "") for t in topics]
+    print(f"  토픽 {len(topic_names)}개: {', '.join(topic_names)}")
 
     print("\n=== [Step 2] 문제 계획 ===")
     planner = PlannerAgent()
@@ -143,11 +148,12 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
         json.dumps({"topic_extraction": topic_data, "requirements": requirements}, ensure_ascii=False)
     ))
 
-    _COUNT_KEYS = {"단답형", "에세이형", "응용형", "난이도"}
+    _COUNT_KEYS = {"단답형", "에세이형", "응용형", "진위형", "난이도"}
     _FORMAT_KEYS = {"시험제목", "시험종류", "담당교수", "레이아웃"}
 
     count_parts = [f"단답형 {plan.get('단답형', 0)}개", f"에세이형 {plan.get('에세이형', 0)}개",
-                   f"응용형 {plan.get('응용형', 0)}개", f"난이도: {plan.get('난이도', 'mixed')}"]
+                   f"응용형 {plan.get('응용형', 0)}개", f"진위형 {plan.get('진위형', 0)}개",
+                   f"난이도: {plan.get('난이도', 'mixed')}"]
     print(f"  문제 구성: {' | '.join(count_parts)}")
 
     fmt_parts = [f"{k}={plan[k]}" for k in _FORMAT_KEYS if k in plan]

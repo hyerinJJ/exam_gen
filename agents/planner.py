@@ -9,10 +9,11 @@ SYSTEM_PROMPT = """당신은 대학 시험 출제 계획 전문가입니다.
 다른 텍스트 없이 JSON만 출력하세요.
 
 규칙:
-- 아래 4개 고정 키는 반드시 정확한 이름으로 포함. 명시되지 않은 유형은 0.
+- 아래 5개 고정 키는 반드시 정확한 이름으로 포함. 명시되지 않은 유형은 0.
   "단답형": <정수>    (키 이름 절대 변경 금지. "단답형 5개" 같은 형태 금지)
   "에세이형": <정수>  (키 이름 절대 변경 금지. "에세이 3개" 같은 형태 금지)
   "응용형": <정수>    (키 이름 절대 변경 금지)
+  "진위형": <정수>    (키 이름 절대 변경 금지. "TF", "T/F", "True/False", "참거짓", "진위형"을 모두 인식할 것)
   "난이도": "easy|medium|hard|mixed"
 - 시험지 표지/포맷 관련 정보는 아래 정해진 키 이름을 사용:
   "시험제목": "시험지 제목"  (명시된 경우에만 포함)
@@ -26,7 +27,10 @@ SYSTEM_PROMPT = """당신은 대학 시험 출제 계획 전문가입니다.
 예시 출력: {{"단답형": 5, "에세이형": 3, "응용형": 0, "난이도": "medium", "시험제목": "Scientific Management", "시험종류": "중간고사", "담당교수": "박우진", "레이아웃": "페이지당 문제 1개"}}"""
 
 # LLM이 고정 키를 변형해 출력해도 복구하는 정규화
-_KEY_FRAGMENTS = {"단답": "단답형", "에세이": "에세이형", "응용": "응용형"}
+_KEY_FRAGMENTS = {
+    "단답": "단답형", "에세이": "에세이형", "응용": "응용형",
+    "진위": "진위형", "TF": "진위형", "T/F": "진위형", "참거짓": "진위형",
+}
 
 
 def _normalize_plan(plan: dict) -> dict:
@@ -34,7 +38,7 @@ def _normalize_plan(plan: dict) -> dict:
     for k, v in plan.items():
         canonical = next((c for frag, c in _KEY_FRAGMENTS.items() if frag in k and k != c), None)
         result[canonical if canonical else k] = v
-    for key in ("단답형", "에세이형", "응용형"):
+    for key in ("단답형", "에세이형", "응용형", "진위형"):
         result.setdefault(key, 0)
     result.setdefault("난이도", "mixed")
     return result
@@ -72,11 +76,21 @@ def _score_topic(topic: dict, qtype: str) -> float:
             boost += 0.2
         if diff == "hard":
             boost += 0.1
+    elif qtype == "tf":
+        if spec in ("concrete", "numerical"):
+            boost += 0.2
+        if cog in ("comparative", "qualitative"):
+            boost += 0.1
+        if imp == "high" and scope == "core":
+            boost += 0.15
+        if diff in ("medium", "hard"):
+            boost += 0.05
 
     return base + boost
 
 
-def _build_plan_items(topics: list, key_concepts: list, counts: dict) -> list:
+def _build_plan_items(topics: list, key_concepts: list, counts: dict,
+                      tf_misconceptions: list = None, concept_pairs: list = None) -> list:
     """메타데이터 기반 라우팅으로 question_plan 항목 리스트를 생성."""
     if not topics:
         return []
@@ -84,6 +98,7 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict) -> list:
     n_short = counts.get("단답형", 0)
     n_essay = counts.get("에세이형", 0)
     n_app = counts.get("응용형", 0)
+    n_tf = counts.get("진위형", 0)
 
     def sorted_pool(qtype: str) -> list:
         scored = sorted(topics, key=lambda t: _score_topic(t, qtype), reverse=True)
@@ -124,6 +139,36 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict) -> list:
         t = app_pool[i % len(app_pool)]
         plan.append(make_item("application", t, t.get("reason", t.get("name", ""))))
 
+    # 진위형: T 35%, F 65% 배분. 마지막 1~2개는 피로 함정(F)
+    tf_pool = sorted_pool("tf")
+    tf_misconceptions = tf_misconceptions or []
+    concept_pairs = concept_pairs or []
+    _TF_F_TYPES = ["오해 직격", "개념쌍 바꿔치기", "정의 정밀도 확인"]
+    if n_tf > 0:
+        n_t = max(1, round(n_tf * 0.35)) if n_tf >= 2 else 1
+        n_t = min(n_t, 4) if n_tf == 10 else n_t
+        n_f = n_tf - n_t
+        n_fatigue = min(2, max(1, n_tf // 5)) if n_tf >= 5 else 0
+        for i in range(n_tf):
+            t = tf_pool[i % len(tf_pool)]
+            item = make_item("tf", t, t.get("reason", t.get("name", "")))
+            if i >= n_tf - n_fatigue:
+                item["tf_type"] = "피로 함정"
+                item["intended_answer"] = "F"
+            elif i < n_t:
+                item["tf_type"] = "반직관 정답"
+                item["intended_answer"] = "T"
+            else:
+                f_idx = i - n_t
+                item["tf_type"] = _TF_F_TYPES[f_idx % len(_TF_F_TYPES)]
+                item["intended_answer"] = "F"
+            if item["tf_type"] == "오해 직격" and tf_misconceptions:
+                item["misconception_hint"] = tf_misconceptions[i % len(tf_misconceptions)]
+            elif item["tf_type"] == "개념쌍 바꿔치기" and concept_pairs:
+                pair = concept_pairs[i % len(concept_pairs)]
+                item["concept_pair_hint"] = f"{pair.get('a', '')} vs {pair.get('b', '')}"
+            plan.append(item)
+
     return plan
 
 
@@ -152,10 +197,12 @@ def _parse_input(input_text: str):
                     {"term": kc, "type": "term", "importance": "medium", "difficulty": "medium"}
                     for kc in key_concepts
                 ]
-            return data.get("requirements", ""), topics, key_concepts
+            tf_misconceptions = extraction.get("tf_misconceptions", [])
+            concept_pairs = extraction.get("concept_pairs", [])
+            return data.get("requirements", ""), topics, key_concepts, tf_misconceptions, concept_pairs
     except (json.JSONDecodeError, TypeError):
         pass
-    return input_text, [], []
+    return input_text, [], [], [], []
 
 
 class PlannerAgent(BaseAgentWorker):
@@ -168,7 +215,7 @@ class PlannerAgent(BaseAgentWorker):
         )
 
     def run(self, input_text: str) -> str:
-        requirements, topics, key_concepts = _parse_input(input_text)
+        requirements, topics, key_concepts, tf_misconceptions, concept_pairs = _parse_input(input_text)
 
         response = retry_call(lambda: self._chat.send_message(requirements))
         raw = response.text.strip()
@@ -181,6 +228,8 @@ class PlannerAgent(BaseAgentWorker):
 
         # 메타데이터가 있으면 question_plan을 생성해 plan에 포함
         if topics:
-            plan["question_plan"] = _build_plan_items(topics, key_concepts, plan)
+            plan["question_plan"] = _build_plan_items(
+                topics, key_concepts, plan, tf_misconceptions, concept_pairs
+            )
 
         return json.dumps(plan, ensure_ascii=False)

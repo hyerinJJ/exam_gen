@@ -10,9 +10,10 @@
 - 출력: 파일별 "=== 파일명 ===" 구분자 포함 통합 텍스트
 - 분기: .pdf→pypdf / .pptx→python-pptx / .mp4/.mov/.avi/.mkv→whisper / .txt→직접읽기
 
-## topic_extractor (기본형, flash-lite)
+## topic_extractor (기본형, claude-sonnet-4-6)
 - 입력: 강의자료 텍스트
 - 출력: {"topics": [...], "key_concepts": [...]} JSON
+- tools/claude_client.py의 claude_generate_text() 사용 (ANTHROPIC_API_KEY 필요)
 
 ## planner (계획형, flash)
 - Chat 객체 사용 (교수자 요구사항 수정 가능하므로 히스토리 유지)
@@ -20,8 +21,8 @@
 - 출력: {"단답형": 5, "에세이형": 3, "응용형": 2, "난이도": "mixed"} JSON
 
 ## generators (agents/generators.py)
-- ShortAnswerGenerator (기본형, flash-lite)
-- EssayGenerator (기본형, flash-lite)
+- ShortAnswerGenerator (기본형, claude-sonnet-4-6) — claude_generate_text() 사용
+- EssayGenerator (기본형, claude-sonnet-4-6) — claude_generate_text() 사용
 - ApplicationGenerator (ReAct, flash)
   - 도구: search_arxiv (로컬) + Google Search (플러그인, 별도 요청)
 - 입력: {"topics": [...], "count": N, "difficulty": "..."} JSON
