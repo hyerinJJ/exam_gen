@@ -20,22 +20,45 @@ def _generate_questions(topics: list, plan: dict) -> list:
     """ShortAnswer / Essay / Application 병렬 생성 후 합산."""
     difficulty = plan.get("난이도", "mixed")
     scope = ", ".join(f"{k}: {v}" for k, v in plan.items() if k not in _FIXED_PLAN_KEYS)
-    tasks = [
-        (ShortAnswerGenerator(), plan.get("단답형", 0)),
-        (EssayGenerator(),       plan.get("에세이형", 0)),
-        (ApplicationGenerator(), plan.get("응용형", 0)),
-    ]
+    question_plan = plan.get("question_plan", [])
 
     results = []
     with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(
-                agent.run,
-                json.dumps({"topics": topics, "count": count, "difficulty": difficulty, "scope": scope}, ensure_ascii=False),
-            ): agent.name
-            for agent, count in tasks
-            if count > 0
-        }
+        if question_plan:
+            # 신형: planner가 question_plan을 생성한 경우 plan_items 형식 사용
+            short_items = [p for p in question_plan if p["question_type"] == "short_answer"]
+            essay_items = [p for p in question_plan if p["question_type"] == "essay"]
+            app_items   = [p for p in question_plan if p["question_type"] == "application"]
+            tasks_new = [
+                (ShortAnswerGenerator(), short_items),
+                (EssayGenerator(),       essay_items),
+                (ApplicationGenerator(), app_items),
+            ]
+            futures = {
+                executor.submit(
+                    agent.run,
+                    json.dumps({"plan_items": items}, ensure_ascii=False),
+                ): agent.name
+                for agent, items in tasks_new
+                if items
+            }
+        else:
+            # 구형 fallback: topic 이름 문자열만 추출해서 전달
+            topic_names = [t["name"] if isinstance(t, dict) else t for t in topics]
+            tasks_old = [
+                (ShortAnswerGenerator(), plan.get("단답형", 0)),
+                (EssayGenerator(),       plan.get("에세이형", 0)),
+                (ApplicationGenerator(), plan.get("응용형", 0)),
+            ]
+            futures = {
+                executor.submit(
+                    agent.run,
+                    json.dumps({"topics": topic_names, "count": count, "difficulty": difficulty, "scope": scope}, ensure_ascii=False),
+                ): agent.name
+                for agent, count in tasks_old
+                if count > 0
+            }
+
         for future in as_completed(futures):
             name = futures[future]
             try:
@@ -59,6 +82,8 @@ def _auto_fix_questions(qa_pairs: list, issues: list, topics: list, plan: dict) 
     """품질 문제가 있는 문제를 유형별 generator로 1개 재생성 후 답안도 교체."""
     difficulty = plan.get("난이도", "mixed")
     scope = ", ".join(f"{k}: {v}" for k, v in plan.items() if k not in _FIXED_PLAN_KEYS)
+    # topics가 dict 배열이면 이름만 추출 (구형 generator fallback 입력용)
+    topic_names = [t["name"] if isinstance(t, dict) else t for t in topics]
     type_to_gen = {
         "short": ShortAnswerGenerator(),
         "essay": EssayGenerator(),
@@ -78,7 +103,7 @@ def _auto_fix_questions(qa_pairs: list, issues: list, topics: list, plan: dict) 
             continue
         try:
             raw_q = gen.run(json.dumps(
-                {"topics": topics, "count": 1, "difficulty": difficulty, "scope": scope},
+                {"topics": topic_names, "count": 1, "difficulty": difficulty, "scope": scope},
                 ensure_ascii=False,
             ))
             new_qs = json.loads(raw_q)
@@ -114,7 +139,9 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
 
     print("\n=== [Step 2] 문제 계획 ===")
     planner = PlannerAgent()
-    plan = json.loads(planner.run(f"토픽: {topics}\n요구사항: {requirements}"))
+    plan = json.loads(planner.run(
+        json.dumps({"topic_extraction": topic_data, "requirements": requirements}, ensure_ascii=False)
+    ))
 
     _COUNT_KEYS = {"단답형", "에세이형", "응용형", "난이도"}
     _FORMAT_KEYS = {"시험제목", "시험종류", "담당교수", "레이아웃"}

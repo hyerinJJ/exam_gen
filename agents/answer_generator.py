@@ -36,7 +36,7 @@ ESSAY_PROMPT = f"""{_CORE_PRINCIPLE}
 - 계산 요구 → 풀이 과정과 결과값만
 - 사례 제시 요구 → 구체적 사례 1~2개만
 
-문제: {{question}}"""
+{{difficulty_hint}}문제: {{question}}"""
 
 APPLICATION_PROMPT = f"""{_CORE_PRINCIPLE}
 {_NO_MARKDOWN}
@@ -46,6 +46,7 @@ APPLICATION_PROMPT = f"""{_CORE_PRINCIPLE}
 - 참고 자료(arXiv, Google)는 현실 사례나 배경 맥락 확인용으로만 참고하라.
   참고 자료에서만 나오는 내용을 답안의 근거로 쓰지 마라.
 - 시나리오 재서술 금지. 질문에만 집중하라.
+- 각 관점마다 1~2문장만 작성
 
 참고 자료:
 {{search_results}}
@@ -126,7 +127,14 @@ class AnswerGeneratorAgent(BaseAgentWorker):
         return {"answer": answer, "rubric": rubric}
 
     def _generate_essay_answer(self, question: dict) -> dict:
-        prompt = ESSAY_PROMPT.format(question=question["question"])
+        diff = question.get("difficulty", "")
+        if diff == "hard":
+            diff_hint = "난이도: hard — 비판적 분석과 종합적 이해가 드러나는 수준으로 답하라.\n"
+        elif diff == "easy":
+            diff_hint = "난이도: easy — 핵심 개념만 간결하게 서술하라.\n"
+        else:
+            diff_hint = ""
+        prompt = ESSAY_PROMPT.format(question=question["question"], difficulty_hint=diff_hint)
         response = retry_call(lambda: self._client.models.generate_content(model=FLASH_LITE, contents=prompt))
         answer = response.text.strip()
         rubric = self._generate_rubric(question["question"], answer)
