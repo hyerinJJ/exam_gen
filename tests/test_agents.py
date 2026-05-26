@@ -10,35 +10,26 @@ SAMPLE_OUTPUT = {
     "topics": [
         {
             "name": "머신러닝 개요",
-            "importance": "high",
-            "scope": "core",
-            "specificity": "abstract",
-            "cognitive_type": "qualitative",
+            "importance": "core",
             "difficulty": "easy",
-            "sequence_dependency": False,
-            "exam_suitability": {"short_answer": 0.7, "essay": 0.9, "application": 0.5},
+            "knowledge_type": "framework",
+            "exam_use": ["short", "essay"],
             "reason": "강의 전반에 걸쳐 기반이 되는 개념",
         },
         {
             "name": "지도학습",
-            "importance": "high",
-            "scope": "core",
-            "specificity": "concrete",
-            "cognitive_type": "procedural",
+            "importance": "core",
             "difficulty": "medium",
-            "sequence_dependency": True,
-            "exam_suitability": {"short_answer": 0.8, "essay": 0.7, "application": 0.9},
+            "knowledge_type": "procedure",
+            "exam_use": ["short", "essay", "application"],
             "reason": "실습과 연결되는 핵심 방법론",
         },
         {
             "name": "비지도학습",
-            "importance": "medium",
-            "scope": "core",
-            "specificity": "abstract",
-            "cognitive_type": "comparative",
+            "importance": "supporting",
             "difficulty": "medium",
-            "sequence_dependency": True,
-            "exam_suitability": {"short_answer": 0.6, "essay": 0.8, "application": 0.7},
+            "knowledge_type": "comparison",
+            "exam_use": ["essay", "tf"],
             "reason": "지도학습과 대비되는 개념",
         },
     ],
@@ -46,6 +37,7 @@ SAMPLE_OUTPUT = {
         {"term": "과적합", "type": "definition", "importance": "high", "difficulty": "medium"},
         {"term": "학습률", "type": "number", "importance": "medium", "difficulty": "hard"},
     ],
+    "tf_traps": [],
 }
 
 
@@ -69,13 +61,14 @@ def test_topics_are_object_array():
 
 def test_topic_allowed_values():
     result = _run_extractor(SAMPLE_OUTPUT)
-    importance_values = {"high", "medium", "low"}
-    scope_values = {"core", "detail", "example", "background"}
+    importance_values = {"core", "supporting", "detail"}
+    knowledge_type_values = {"term", "number", "procedure", "comparison", "causal", "framework", "case"}
     difficulty_values = {"easy", "medium", "hard"}
     for topic in result["topics"]:
         assert topic["importance"] in importance_values, f"importance={topic['importance']!r} not allowed"
-        assert topic["scope"] in scope_values, f"scope={topic['scope']!r} not allowed"
+        assert topic["knowledge_type"] in knowledge_type_values, f"knowledge_type={topic['knowledge_type']!r} not allowed"
         assert topic["difficulty"] in difficulty_values, f"difficulty={topic['difficulty']!r} not allowed"
+        assert isinstance(topic.get("exam_use"), list), "exam_use must be a list"
 
 
 def test_key_concepts_are_object_array():
@@ -103,98 +96,209 @@ def test_invalid_enum_values_normalized():
             {
                 "name": "정규화 테스트",
                 "importance": "INVALID",
-                "scope": "INVALID",
-                "specificity": "INVALID",
-                "cognitive_type": "INVALID",
                 "difficulty": "INVALID",
-                "sequence_dependency": "yes",
-                "exam_suitability": "not_a_dict",
+                "knowledge_type": "INVALID",
+                "exam_use": "not_a_list",
                 "reason": "보정 테스트",
             }
         ],
         "key_concepts": [
             {"term": "테스트 개념", "type": "INVALID", "importance": "INVALID", "difficulty": "INVALID"}
         ],
+        "tf_traps": [],
     }
     result = _run_extractor(bad_output)
     topic = result["topics"][0]
-    assert topic["importance"] == "medium"
-    assert topic["scope"] == "core"
+    assert topic["importance"] == "supporting"
     assert topic["difficulty"] == "medium"
-    assert topic["sequence_dependency"] is False
-    assert isinstance(topic["exam_suitability"], dict)
+    assert topic["knowledge_type"] == "term"
+    assert isinstance(topic["exam_use"], list)
     concept = result["key_concepts"][0]
     assert concept["type"] == "term"
     assert concept["importance"] == "medium"
 
 
+# ── source_file 정규화 테스트 ────────────────────────────────────────────────
+
+def test_topic_source_file_defaults_to_unknown():
+    """topics에 source_file이 없으면 'unknown'으로 채워져야 함."""
+    output = {
+        "topics": [{"name": "테스트", "importance": "core", "difficulty": "medium",
+                    "knowledge_type": "term", "exam_use": [], "reason": ""}],
+        "key_concepts": [],
+        "tf_traps": [],
+    }
+    result = _run_extractor(output)
+    assert result["topics"][0]["source_file"] == "unknown"
+
+
+def test_topic_source_file_preserved():
+    """topics에 source_file이 있으면 그대로 유지되어야 함."""
+    output = {
+        "topics": [{"name": "테스트", "importance": "core", "difficulty": "medium",
+                    "knowledge_type": "term", "exam_use": [], "reason": "",
+                    "source_file": "lecture1.pdf"}],
+        "key_concepts": [],
+        "tf_traps": [],
+    }
+    result = _run_extractor(output)
+    assert result["topics"][0]["source_file"] == "lecture1.pdf"
+
+
+def test_plan_source_file_balanced_equal_score():
+    """동일 점수 topic 사이에서 pick_balanced가 source_file을 분산시켜야 함."""
+    from agents.planner import _build_plan_items
+    base = {"importance": "supporting", "difficulty": "medium",
+            "knowledge_type": "comparison", "exam_use": ["essay"], "reason": ""}
+    topics = [
+        {**base, "name": "A1", "source_file": "file_a.pdf"},
+        {**base, "name": "A2", "source_file": "file_a.pdf"},
+        {**base, "name": "A3", "source_file": "file_a.pdf"},
+        {**base, "name": "B1", "source_file": "file_b.pdf"},
+    ]
+    counts = {"단답형": 0, "에세이형": 2, "응용형": 0, "난이도": "mixed"}
+    plan = _build_plan_items(topics, [], counts)
+    # 1st pick: A1 (all tied, stable order). file_a counter=1.
+    # 2nd pick: B1 wins (file_b penalty=0 vs file_a penalty=0.05).
+    topic_names = [item["topic_name"] for item in plan]
+    assert "B1" in topic_names
+
+
+def test_plan_source_file_not_in_topic_meta():
+    """plan_item의 topic_meta에 source_file이 포함되지 않아야 함."""
+    from agents.planner import _build_plan_items
+    topic = {"name": "테스트", "importance": "core", "difficulty": "medium",
+             "knowledge_type": "framework", "exam_use": ["essay"], "reason": "",
+             "source_file": "secret.pdf"}
+    plan = _build_plan_items([topic], [], {"단답형": 0, "에세이형": 1, "응용형": 0})
+    assert "source_file" not in plan[0]["topic_meta"]
+
+
+# ── 하위 호환 정규화 테스트 ────────────────────────────────────────────────────
+
+def test_backward_compat_importance_old_to_new():
+    """구형 importance(high/medium/low)가 새 값(core/supporting/detail)으로 정규화되어야 함."""
+    old_output = {
+        "topics": [
+            {"name": "핵심", "importance": "high", "difficulty": "medium",
+             "knowledge_type": "term", "exam_use": [], "reason": ""},
+            {"name": "보조", "importance": "medium", "difficulty": "easy",
+             "knowledge_type": "term", "exam_use": [], "reason": ""},
+            {"name": "세부", "importance": "low", "difficulty": "hard",
+             "knowledge_type": "term", "exam_use": [], "reason": ""},
+        ],
+        "key_concepts": [],
+        "tf_traps": [],
+    }
+    result = _run_extractor(old_output)
+    importances = [t["importance"] for t in result["topics"]]
+    assert importances == ["core", "supporting", "detail"]
+
+
+def test_backward_compat_old_fields_to_knowledge_type():
+    """구형 specificity/cognitive_type/exam_suitability 필드가 knowledge_type/exam_use로 변환되어야 함."""
+    old_output = {
+        "topics": [
+            {
+                "name": "수치 개념",
+                "importance": "medium",
+                "scope": "core",
+                "specificity": "numerical",
+                "cognitive_type": "quantitative",
+                "difficulty": "medium",
+                "sequence_dependency": False,
+                "exam_suitability": {"short_answer": 0.9, "essay": 0.3, "application": 0.2},
+                "reason": "",
+            }
+        ],
+        "key_concepts": [],
+        "tf_traps": [],
+    }
+    result = _run_extractor(old_output)
+    t = result["topics"][0]
+    assert t["knowledge_type"] == "number"
+    assert "short" in t["exam_use"]
+    assert "essay" not in t["exam_use"]
+    assert t["importance"] == "supporting"
+
+
+def test_backward_compat_old_tf_fields_to_tf_traps():
+    """구형 tf_misconceptions/concept_pairs가 있으면 tf_traps로 변환되어야 함."""
+    old_output = {
+        "topics": [{"name": "테스트", "importance": "core", "difficulty": "medium",
+                    "knowledge_type": "term", "exam_use": [], "reason": ""}],
+        "key_concepts": [],
+        "tf_misconceptions": ["머신러닝은 항상 지도학습이다"],
+        "concept_pairs": [{"a": "지도학습", "b": "비지도학습", "relation": "대비"}],
+    }
+    result = _run_extractor(old_output)
+    assert isinstance(result["tf_traps"], list)
+    assert len(result["tf_traps"]) == 2
+    types = {t["type"] for t in result["tf_traps"]}
+    assert "misconception" in types
+    assert "concept_swap" in types
+
+
 # ── Planner 라우팅 테스트 ─────────────────────────────────────────────────────
 
-# 라우팅 테스트용 토픽 fixtures
 _NUMERICAL_TOPIC = {
     "name": "수치 개념",
-    "importance": "medium", "scope": "core",
-    "specificity": "numerical", "cognitive_type": "quantitative",
-    "difficulty": "medium", "sequence_dependency": False,
-    "exam_suitability": {"short_answer": 0.7, "essay": 0.2, "application": 0.3},
+    "importance": "supporting", "difficulty": "medium",
+    "knowledge_type": "number",
+    "exam_use": ["short", "tf"],
     "reason": "수치 암기",
 }
 _CAUSAL_TOPIC = {
     "name": "인과 개념",
-    "importance": "high", "scope": "core",
-    "specificity": "abstract", "cognitive_type": "causal",
-    "difficulty": "hard", "sequence_dependency": False,
-    "exam_suitability": {"short_answer": 0.2, "essay": 0.9, "application": 0.8},
+    "importance": "core", "difficulty": "hard",
+    "knowledge_type": "causal",
+    "exam_use": ["essay", "application"],
     "reason": "인과 관계 분석",
 }
-_SEQ_DEP_TOPIC = {
+_PROCEDURE_TOPIC = {
     "name": "절차 개념",
-    "importance": "medium", "scope": "core",
-    "specificity": "procedural", "cognitive_type": "procedural",
-    "difficulty": "medium", "sequence_dependency": True,
-    "exam_suitability": {"short_answer": 0.3, "essay": 0.5, "application": 0.5},
+    "importance": "supporting", "difficulty": "medium",
+    "knowledge_type": "procedure",
+    "exam_use": ["essay", "application"],
     "reason": "절차 이해",
 }
 _CORE_HIGH_TOPIC = {
     "name": "핵심 개념 A",
-    "importance": "high", "scope": "core",
-    "specificity": "abstract", "cognitive_type": "qualitative",
-    "difficulty": "medium", "sequence_dependency": False,
-    "exam_suitability": {"short_answer": 0.5, "essay": 0.9, "application": 0.5},
+    "importance": "core", "difficulty": "medium",
+    "knowledge_type": "framework",
+    "exam_use": ["essay", "application"],
     "reason": "강의 핵심",
 }
 _LOW_IMPORTANCE_TOPIC = {
     "name": "세부 개념 B",
-    "importance": "low", "scope": "detail",
-    "specificity": "concrete", "cognitive_type": "quantitative",
-    "difficulty": "easy", "sequence_dependency": False,
-    "exam_suitability": {"short_answer": 0.9, "essay": 0.3, "application": 0.2},
+    "importance": "detail", "difficulty": "easy",
+    "knowledge_type": "term",
+    "exam_use": ["short"],
     "reason": "세부 사항",
 }
 
 
 def test_score_numerical_higher_for_short_answer():
-    """numerical/quantitative 토픽은 short_answer 점수가 causal보다 높아야 함."""
+    """number 지식유형 토픽은 short_answer 점수가 causal보다 높아야 함."""
     from agents.planner import _score_topic
     assert _score_topic(_NUMERICAL_TOPIC, "short_answer") > _score_topic(_CAUSAL_TOPIC, "short_answer")
 
 
 def test_score_causal_higher_for_essay():
-    """causal 토픽은 essay 점수가 numerical보다 높아야 함."""
+    """causal 지식유형 토픽은 essay 점수가 numerical보다 높아야 함."""
     from agents.planner import _score_topic
     assert _score_topic(_CAUSAL_TOPIC, "essay") > _score_topic(_NUMERICAL_TOPIC, "essay")
 
 
-def test_score_seq_dep_boosts_essay_and_application():
-    """sequence_dependency=true이면 essay, application 점수가 올라야 함."""
+def test_score_procedure_boosts_application():
+    """knowledge_type=procedure인 토픽은 application 점수가 exam_use 없는 term보다 높아야 함."""
     from agents.planner import _score_topic
-    no_dep = {**_SEQ_DEP_TOPIC, "sequence_dependency": False}
-    assert _score_topic(_SEQ_DEP_TOPIC, "essay") > _score_topic(no_dep, "essay")
-    assert _score_topic(_SEQ_DEP_TOPIC, "application") > _score_topic(no_dep, "application")
+    term_only = {**_PROCEDURE_TOPIC, "knowledge_type": "term", "exam_use": []}
+    assert _score_topic(_PROCEDURE_TOPIC, "application") > _score_topic(term_only, "application")
 
 
 def test_plan_includes_core_high_topic():
-    """high importance core 토픽이 question_plan에 반드시 포함되어야 함."""
+    """core importance 토픽이 question_plan에 반드시 포함되어야 함."""
     from agents.planner import _build_plan_items
     topics = [_CORE_HIGH_TOPIC, _LOW_IMPORTANCE_TOPIC]
     counts = {"단답형": 1, "에세이형": 1, "응용형": 0, "난이도": "mixed"}
@@ -204,11 +308,10 @@ def test_plan_includes_core_high_topic():
 
 
 def test_plan_picks_numerical_for_short_answer():
-    """short_answer 슬롯은 numerical/quantitative 토픽이 우선 선택되어야 함 (같은 중요도 티어 내)."""
+    """short_answer 슬롯은 number 지식유형 토픽이 우선 선택되어야 함 (같은 중요도 티어 내)."""
     from agents.planner import _build_plan_items
-    # 두 토픽 모두 medium importance로 같은 티어에 놓아 점수 기반 선택을 테스트
-    numerical = {**_NUMERICAL_TOPIC, "importance": "medium"}
-    causal = {**_CAUSAL_TOPIC, "importance": "medium"}
+    numerical = {**_NUMERICAL_TOPIC, "importance": "supporting"}
+    causal = {**_CAUSAL_TOPIC, "importance": "supporting"}
     topics = [causal, numerical]  # causal을 앞에 넣어 순서 의존성 제거
     counts = {"단답형": 1, "에세이형": 0, "응용형": 0, "난이도": "mixed"}
     plan = _build_plan_items(topics, [], counts)
@@ -228,11 +331,10 @@ def test_plan_picks_causal_for_essay():
     assert plan[0]["topic_name"] == "인과 개념"
 
 
-def test_plan_seq_dep_goes_to_application():
-    """sequence_dependency=true 토픽은 application 슬롯으로 우선 배치되어야 함."""
+def test_plan_procedure_goes_to_application():
+    """knowledge_type=procedure 토픽은 application 슬롯으로 우선 배치되어야 함."""
     from agents.planner import _build_plan_items
-    # seq_dep_topic vs numerical (낮은 application score)
-    topics = [_NUMERICAL_TOPIC, _SEQ_DEP_TOPIC]
+    topics = [_NUMERICAL_TOPIC, _PROCEDURE_TOPIC]
     counts = {"단답형": 0, "에세이형": 0, "응용형": 1, "난이도": "mixed"}
     plan = _build_plan_items(topics, [], counts)
     assert len(plan) == 1
@@ -260,13 +362,10 @@ _SAMPLE_PLAN_ITEMS = [
         "difficulty": "medium",
         "reason": "핵심 수치 이해",
         "topic_meta": {
-            "importance": "high",
-            "scope": "core",
-            "specificity": "numerical",
-            "cognitive_type": "quantitative",
+            "importance": "core",
             "difficulty": "medium",
-            "sequence_dependency": False,
-            "exam_suitability": {"short_answer": 0.9, "essay": 0.5, "application": 0.4},
+            "knowledge_type": "number",
+            "exam_use": ["short", "tf"],
         },
     }
 ]
@@ -287,8 +386,8 @@ def test_short_generator_prompt_contains_metadata():
     prompt_text = _captured_prompt(ShortAnswerGenerator, _SAMPLE_PLAN_ITEMS, "agents.generators")
     assert "경사하강법" in prompt_text
     assert "학습률" in prompt_text
-    # specificity 또는 cognitive_type 정보가 프롬프트에 포함되어야 함
-    assert "numerical" in prompt_text or "quantitative" in prompt_text
+    # knowledge_type 정보가 프롬프트에 포함되어야 함
+    assert "number" in prompt_text
 
 
 def test_essay_generator_prompt_contains_metadata():
@@ -299,8 +398,7 @@ def test_essay_generator_prompt_contains_metadata():
             "question_type": "essay",
             "topic_meta": {
                 **_SAMPLE_PLAN_ITEMS[0]["topic_meta"],
-                "cognitive_type": "causal",
-                "specificity": "abstract",
+                "knowledge_type": "causal",
             },
         }
     ]
@@ -312,41 +410,73 @@ def test_essay_generator_prompt_contains_metadata():
 
     all_prompts = " ".join(str(call.args[0]) for call in mock_claude.call_args_list)
     assert "경사하강법" in all_prompts
-    assert "causal" in all_prompts or "abstract" in all_prompts
+    assert "causal" in all_prompts
 
 
 # ── TF 관련 테스트 ────────────────────────────────────────────────────────────
 
 _SAMPLE_OUTPUT_WITH_TF = {
     **SAMPLE_OUTPUT,
-    "tf_misconceptions": ["머신러닝은 항상 지도학습을 기반으로 한다"],
-    "concept_pairs": [{"a": "지도학습", "b": "비지도학습", "relation": "대비"}],
+    "tf_traps": [
+        {
+            "type": "misconception",
+            "source_topic": "머신러닝",
+            "statement_seed": "머신러닝은 항상 지도학습을 기반으로 한다",
+            "answer": "F",
+            "reason": "비지도학습·강화학습도 존재",
+        },
+        {
+            "type": "concept_swap",
+            "source_topic": "지도학습",
+            "statement_seed": "지도학습 vs 비지도학습: 레이블 유무",
+            "answer": "T",
+            "reason": "레이블 유무가 핵심 구분점",
+        },
+    ],
 }
 
 _CONCRETE_TOPIC = {
     "name": "구체 개념",
-    "importance": "high", "scope": "core",
-    "specificity": "concrete", "cognitive_type": "comparative",
-    "difficulty": "medium", "sequence_dependency": False,
-    "exam_suitability": {"short_answer": 0.5, "essay": 0.4, "application": 0.5},
+    "importance": "core", "difficulty": "medium",
+    "knowledge_type": "comparison",
+    "exam_use": ["short", "tf"],
     "reason": "구체 사실 확인",
 }
 
 
 def test_extractor_tf_fields():
-    """topic_extractor 출력에 tf_misconceptions과 concept_pairs가 리스트로 포함되어야 함."""
+    """topic_extractor 출력에 tf_traps가 리스트로 포함되어야 함."""
     result = _run_extractor(_SAMPLE_OUTPUT_WITH_TF)
-    assert isinstance(result["tf_misconceptions"], list)
-    assert isinstance(result["concept_pairs"], list)
-    assert len(result["tf_misconceptions"]) > 0
-    assert len(result["concept_pairs"]) > 0
+    assert isinstance(result["tf_traps"], list)
+    assert len(result["tf_traps"]) > 0
+    for trap in result["tf_traps"]:
+        assert "type" in trap
+        assert "statement_seed" in trap
+        assert "answer" in trap
 
 
 def test_extractor_tf_fields_default_empty():
-    """tf_misconceptions/concept_pairs가 없으면 빈 리스트로 정규화되어야 함."""
+    """tf_traps가 없으면 빈 리스트로 정규화되어야 함."""
     result = _run_extractor(SAMPLE_OUTPUT)
-    assert isinstance(result["tf_misconceptions"], list)
-    assert isinstance(result["concept_pairs"], list)
+    assert isinstance(result["tf_traps"], list)
+
+
+def test_tf_traps_in_plan_items():
+    """tf_traps가 있으면 TF plan_item에 힌트가 주입되어야 함."""
+    from agents.planner import _build_plan_items
+    tf_traps = [
+        {"type": "misconception", "source_topic": "구체 개념",
+         "statement_seed": "이 개념은 항상 옳다", "answer": "F", "reason": "예외 있음"},
+    ]
+    topics = [_CONCRETE_TOPIC]
+    counts = {"단답형": 0, "에세이형": 0, "응용형": 0, "진위형": 1}
+    plan = _build_plan_items(topics, [], counts, tf_traps=tf_traps)
+    tf_items = [i for i in plan if i["question_type"] == "tf"]
+    assert len(tf_items) == 1
+    item = tf_items[0]
+    assert item.get("tf_type") == "오해 직격"
+    assert item.get("intended_answer") == "F"
+    assert item.get("misconception_hint") == "이 개념은 항상 옳다"
 
 
 def test_planner_tf_plan():
@@ -364,7 +494,7 @@ def test_planner_tf_plan():
 
 
 def test_planner_tf_tf_ratio():
-    """T:F 비율이 대략 35:65를 따라야 함 (10개 기준)."""
+    """T:F 비율이 대략 35:65를 따라야 함 (10개 기준, tf_traps 없을 때)."""
     from agents.planner import _build_plan_items
     topics = [_CONCRETE_TOPIC, _NUMERICAL_TOPIC]
     counts = {"단답형": 0, "에세이형": 0, "응용형": 0, "진위형": 10, "난이도": "mixed"}
@@ -420,7 +550,7 @@ def test_quality_reviewer_tf_criteria():
     from agents.quality_reviewer import REVIEW_PROMPT
     assert "진위형" in REVIEW_PROMPT
     assert "(T/F)" in REVIEW_PROMPT
-    assert "단일 명제" in REVIEW_PROMPT
+    assert "단일 사실" in REVIEW_PROMPT
 
 
 def test_file_writers_tf_type():
@@ -442,10 +572,9 @@ _TF_PLAN_ITEMS = [
         "intended_answer": "F",
         "tf_type": "오해 직격",
         "misconception_hint": "비지도학습도 레이블이 필요하다는 오해",
-        "topic_meta": {"importance": "high", "scope": "core",
-                       "specificity": "concrete", "cognitive_type": "comparative",
-                       "difficulty": "medium", "sequence_dependency": False,
-                       "exam_suitability": {"short_answer": 0.5, "essay": 0.4, "application": 0.5}},
+        "topic_meta": {"importance": "core", "difficulty": "medium",
+                       "knowledge_type": "comparison",
+                       "exam_use": ["short", "tf", "essay"]},
     }
 ]
 
@@ -456,10 +585,9 @@ _APP_PLAN_ITEMS = [
         "target_concept": "Work System Framework",
         "difficulty": "hard",
         "reason": "새로운 맥락 적용",
-        "topic_meta": {"importance": "high", "scope": "core",
-                       "specificity": "abstract", "cognitive_type": "procedural",
-                       "difficulty": "hard", "sequence_dependency": True,
-                       "exam_suitability": {"short_answer": 0.2, "essay": 0.5, "application": 0.9}},
+        "topic_meta": {"importance": "core", "difficulty": "hard",
+                       "knowledge_type": "framework",
+                       "exam_use": ["essay", "application"]},
     }
 ]
 
@@ -489,7 +617,6 @@ def test_tf_answer_generator_uses_seed_skips_model():
         agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
         agent._client = MagicMock()
         result = agent._generate_tf_answer(q)
-    # grading_seed.reason이 있으므로 retry_call(모델 호출) 없어야 함
     mock_retry.assert_not_called()
     assert result["answer"] == "F"
     assert "비지도학습은 레이블 불필요" in result["rubric"]
@@ -497,19 +624,6 @@ def test_tf_answer_generator_uses_seed_skips_model():
 
 def test_application_answer_generator_injects_seed_context():
     """Application AnswerGenerator 프롬프트에 grading_seed 내용이 포함되어야 함."""
-    captured_prompts = []
-
-    def fake_retry(fn):
-        response = MagicMock()
-        response.text = "모범답안 텍스트"
-        # 프롬프트 캡처: generate_content의 contents 인자를 기록
-        try:
-            result = fn()
-            captured_prompts.append(result)
-        except Exception:
-            pass
-        return response
-
     from agents.answer_generator import AnswerGeneratorAgent, _seed_context
     q = {"id": "Q1", "type": "application",
          "question": "Work System Framework를 적용하여 분석하시오.",
@@ -522,19 +636,17 @@ def test_application_answer_generator_injects_seed_context():
 
 
 def test_short_answer_generator_uses_seed():
-    """ShortAnswer AnswerGenerator가 grading_seed.expected_answer를 answer로 사용해야 함."""
+    """ShortAnswer AnswerGenerator가 grading_seed.expected_answer를 answer로 사용하고 Gemini 호출이 0회여야 함."""
     from agents.answer_generator import AnswerGeneratorAgent
     q = {"id": "Q1", "type": "short",
          "question": "경사하강법에서 업데이트 속도를 조절하는 하이퍼파라미터는?",
          "grading_seed": {"expected_answer": "학습률", "accepted_variants": ["learning rate"]}}
     with patch("agents.answer_generator.retry_call") as mock_retry:
-        mock_retry.return_value = MagicMock(text="채점기준")
         agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
         agent._client = MagicMock()
         result = agent._generate_short_answer(q)
     assert result["answer"] == "학습률"
-    # 답안 생성용 모델 호출 없음 (루브릭 생성만 1회)
-    assert mock_retry.call_count == 1
+    mock_retry.assert_not_called()
 
 
 def test_grading_seed_not_in_answer_generator_output():
@@ -564,6 +676,56 @@ def test_grading_seed_absent_fallback():
     # grading_seed 없으면 모델 호출 2회 (답안 + 루브릭)
     assert mock_retry.call_count == 2
     assert result["answer"] == "답변"
+
+
+# ── short answer seed 기반 rubric 생성 테스트 ─────────────────────────────────
+
+def test_short_answer_seed_rubric_includes_variants():
+    """accepted_variants가 있으면 rubric에 '허용 답안' 줄이 포함되어야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    q = {"id": "Q1", "type": "short",
+         "question": "과학적 관리법을 제창한 인물은?",
+         "grading_seed": {"expected_answer": "테일러", "accepted_variants": ["Taylor", "F.W. Taylor"]}}
+    with patch("agents.answer_generator.retry_call") as mock_retry:
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        result = agent._generate_short_answer(q)
+    mock_retry.assert_not_called()
+    assert result["answer"] == "테일러"
+    assert "정답(10점): 테일러" in result["rubric"]
+    assert "허용 답안" in result["rubric"]
+    assert "Taylor" in result["rubric"]
+    assert "오답(0점): 그 외" in result["rubric"]
+
+
+def test_short_answer_seed_rubric_no_variants():
+    """accepted_variants가 없으면 rubric에 '허용 답안' 줄이 없어야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    q = {"id": "Q1", "type": "short",
+         "question": "테스트 문제?",
+         "grading_seed": {"expected_answer": "정답값", "accepted_variants": []}}
+    with patch("agents.answer_generator.retry_call") as mock_retry:
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        result = agent._generate_short_answer(q)
+    mock_retry.assert_not_called()
+    assert result["answer"] == "정답값"
+    assert "정답(10점): 정답값" in result["rubric"]
+    assert "허용 답안" not in result["rubric"]
+    assert "오답(0점): 그 외" in result["rubric"]
+
+
+def test_short_answer_no_seed_calls_gemini():
+    """grading_seed 없는 short 문제는 Gemini를 호출해야 함 (답안 + 루브릭 2회)."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    q = {"id": "Q1", "type": "short", "question": "프로그래밍 언어 중 인터프리터 방식은?"}
+    with patch("agents.answer_generator.retry_call") as mock_retry:
+        mock_retry.return_value = MagicMock(text="Python")
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        result = agent._generate_short_answer(q)
+    assert mock_retry.call_count == 2
+    assert result["answer"] == "Python"
 
 
 # ── application answer generator 검색 재호출 방지 테스트 ──────────────────────

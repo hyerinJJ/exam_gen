@@ -173,10 +173,15 @@ class AnswerGeneratorAgent(BaseAgentWorker):
         seed = question.get("grading_seed")
         if seed and seed.get("expected_answer"):
             answer = seed["expected_answer"]
-        else:
-            prompt = SHORT_ANSWER_PROMPT.format(question=question["question"])
-            response = retry_call(lambda: self._client.models.generate_content(model=FLASH_LITE, contents=prompt))
-            answer = response.text.strip()
+            variants = seed.get("accepted_variants", [])
+            if variants:
+                rubric = f"정답(10점): {answer}\n허용 답안: {', '.join(variants)}\n오답(0점): 그 외"
+            else:
+                rubric = f"정답(10점): {answer}\n오답(0점): 그 외"
+            return {"answer": answer, "rubric": rubric}
+        prompt = SHORT_ANSWER_PROMPT.format(question=question["question"])
+        response = retry_call(lambda: self._client.models.generate_content(model=FLASH_LITE, contents=prompt))
+        answer = response.text.strip()
         rubric = self._generate_rubric(question["question"], answer)
         return {"answer": answer, "rubric": rubric}
 

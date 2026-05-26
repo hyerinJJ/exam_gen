@@ -2,57 +2,26 @@ import json
 from agents.base import BaseAgentWorker
 from tools.claude_client import claude_generate_text
 
-_IMPORTANCE_VALUES = {"high", "medium", "low"}
-_SCOPE_VALUES = {"core", "detail", "example", "background"}
-_SPECIFICITY_VALUES = {"abstract", "concrete", "procedural", "numerical"}
-_COGNITIVE_TYPE_VALUES = {"qualitative", "quantitative", "procedural", "comparative", "causal"}
-_DIFFICULTY_VALUES = {"easy", "medium", "hard"}
+_IMPORTANCE_NEW = {"core", "supporting", "detail"}
+_IMPORTANCE_LEGACY = {"high": "core", "medium": "supporting", "low": "detail"}
+_KNOWLEDGE_TYPE_VALUES = {"term", "number", "procedure", "comparison", "causal", "framework", "case"}
 _CONCEPT_TYPE_VALUES = {"definition", "term", "number", "abbreviation", "formula", "principle"}
+_DIFFICULTY_VALUES = {"easy", "medium", "hard"}
+_TF_TRAP_TYPES = {"misconception", "concept_swap", "counterintuitive", "precision", "fatigue"}
 
-PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제를 위한 심층 분석을 수행하세요.
-
-아래 4단계를 내부적으로 수행한 후, 그 결과를 바탕으로 JSON을 작성하세요.
-(4단계 분석 내용 자체는 JSON 출력에 포함하지 않음)
-
-[STEP 1] 강조 신호 추출
-색상 강조·단독 슬라이드 한 문장·3회 이상 반복 개념·"핵심은/중요한 것은/반드시" 표현이 붙은 내용을 식별할 것.
-
-[STEP 2] 강의 구조 파악
-핵심 메시지 1문장, 강의 흐름(예: 개념 정의→역사→방법론→적용), 개념 간 관계(인과·대비)를 파악할 것.
-
-[STEP 3] 출제 후보 도출
-- 단답형 후보: 핵심 수치·약어·용어 중 의미를 응축한 것 7개 이상
-- 서술형 후보: 두 개념 이상이 연결되는 지점
-- 응용형 후보: 프레임워크를 새로운 맥락에 적용할 수 있는 상황
-- 진위형 후보: 강의에서 명시적으로 경계한 오해, 혼동되기 쉬운 개념쌍
-
-[STEP 4] 토픽 분석 관점 적용
-각 토픽에 대해 아래 7가지 관점을 평가할 것:
-- importance: 강의에서 중요하게 다루어지는가 (high/medium/low)
-- scope: 핵심인가·세부사항인가·예시인가·배경인가 (core/detail/example/background)
-- specificity: 추상적·구체적·절차적·수치적 중 무엇인가 (abstract/concrete/procedural/numerical)
-- cognitive_type: 정성적·정량적·절차적·비교적·인과적 중 무엇인가 (qualitative/quantitative/procedural/comparative/causal)
-- difficulty: 기본 개념·중간·상위 변별 (easy/medium/hard)
-- sequence_dependency: 앞선 개념을 알아야만 이해 가능한가 (true/false)
-- exam_suitability: 단답형/서술형/응용형 문제 적합도 (각 0.0~1.0)
+PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제에 필요한 최소 구조의 JSON을 작성하세요.
 
 반드시 아래 JSON 형식으로만 응답하세요 (마크다운 코드블록 없이, 다른 텍스트 없이):
 {{
   "topics": [
     {{
       "name": "토픽명",
-      "importance": "high",
-      "scope": "core",
-      "specificity": "abstract",
-      "cognitive_type": "qualitative",
+      "importance": "core",
       "difficulty": "medium",
-      "sequence_dependency": false,
-      "exam_suitability": {{
-        "short_answer": 0.8,
-        "essay": 0.9,
-        "application": 0.6
-      }},
-      "reason": "강의에서 반복 강조되며 다른 개념의 기반이 됨"
+      "knowledge_type": "term",
+      "exam_use": ["short", "tf"],
+      "source_file": "파일명 또는 unknown",
+      "reason": "출제 가치 한 문장"
     }}
   ],
   "key_concepts": [
@@ -63,57 +32,108 @@ PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제
       "difficulty": "easy"
     }}
   ],
-  "tf_misconceptions": [
-    "강의에서 경계한 오해 예시"
-  ],
-  "concept_pairs": [
-    {{"a": "개념A", "b": "개념B", "relation": "대비"}}
+  "tf_traps": [
+    {{
+      "type": "misconception",
+      "source_topic": "토픽명",
+      "statement_seed": "명제로 바꿀 핵심 함정",
+      "answer": "F",
+      "reason": "왜 F인지"
+    }}
   ]
 }}
 
 규칙:
-- topics: 강의자료의 각 섹션·개념·방법론·프레임워크를 개별 토픽으로 최소 7개 이상.
-  STEP 1~2에서 강조된 내용을 우선 반영. STEP 4 관점으로 각 토픽을 분석.
-  importance 허용값: high / medium / low
-  scope 허용값: core / detail / example / background
-  specificity 허용값: abstract / concrete / procedural / numerical
-  cognitive_type 허용값: qualitative / quantitative / procedural / comparative / causal
+- topics: 최소 7개. 강의에서 강조된 섹션·개념·방법론·프레임워크를 개별 토픽으로 작성.
+  importance 허용값: core (강의 핵심) / supporting (보조) / detail (세부)
+  knowledge_type 허용값: term (정의·약어) / number (수치·공식) / procedure (절차·단계) / comparison (비교·대비) / causal (인과) / framework (이론·체계) / case (사례·적용)
+  exam_use: 실제로 출제 가능한 문제 유형 선택. 허용값: "short", "tf", "essay", "application"
   difficulty 허용값: easy / medium / hard
-- key_concepts: STEP 3 단답형 후보에서 선별한 핵심 수치·약어·용어.
+  source_file: 강의자료 내 "=== 파일명 ===" 구분자로 식별한 원본 파일명. 구분자가 없거나 알 수 없으면 "unknown".
+- key_concepts: 단답형 출제용 핵심 수치·약어·용어.
   type 허용값: definition / term / number / abbreviation / formula / principle
   importance 허용값: high / medium / low
-  difficulty 허용값: easy / medium / hard
-- tf_misconceptions: STEP 3 진위형 후보 중 강의에서 명시적으로 경계한 오해 목록. 문자열 배열. 없으면 빈 배열.
-- concept_pairs: 대비되거나 혼동되기 쉬운 개념쌍. 각 항목은 {{"a", "b", "relation"}} 객체. 없으면 빈 배열.
+- tf_traps: 진위형 함정. 없으면 빈 배열.
+  type 허용값: misconception (오해) / concept_swap (개념 바꾸기) / counterintuitive (반직관) / precision (정밀도) / fatigue (피로)
+  answer: T 또는 F
 
 강의자료:
 {text}"""
 
 
+def _convert_old_tf_fields(tf_misconceptions: list, concept_pairs: list) -> list:
+    traps = []
+    for m in tf_misconceptions:
+        if isinstance(m, str):
+            traps.append({"type": "misconception", "source_topic": "",
+                          "statement_seed": m, "answer": "F", "reason": ""})
+    for cp in concept_pairs:
+        if isinstance(cp, dict):
+            seed = f"{cp.get('a', '')} vs {cp.get('b', '')}: {cp.get('relation', '')}"
+            traps.append({"type": "concept_swap", "source_topic": cp.get("a", ""),
+                          "statement_seed": seed, "answer": "F", "reason": ""})
+    return traps
+
+
 def _normalize_topic(topic: dict) -> dict:
-    if topic.get("importance") not in _IMPORTANCE_VALUES:
-        topic["importance"] = "medium"
-    if topic.get("scope") not in _SCOPE_VALUES:
-        topic["scope"] = "core"
-    if topic.get("specificity") not in _SPECIFICITY_VALUES:
-        topic["specificity"] = "abstract"
-    if topic.get("cognitive_type") not in _COGNITIVE_TYPE_VALUES:
-        topic["cognitive_type"] = "qualitative"
+    # importance: map old high/medium/low → new core/supporting/detail
+    imp = topic.get("importance", "")
+    if imp in _IMPORTANCE_LEGACY:
+        topic["importance"] = _IMPORTANCE_LEGACY[imp]
+    elif imp not in _IMPORTANCE_NEW:
+        topic["importance"] = "supporting"
+
+    # difficulty
     if topic.get("difficulty") not in _DIFFICULTY_VALUES:
         topic["difficulty"] = "medium"
-    if not isinstance(topic.get("sequence_dependency"), bool):
-        topic["sequence_dependency"] = False
-    if not isinstance(topic.get("exam_suitability"), dict):
-        topic["exam_suitability"] = {"short_answer": 0.5, "essay": 0.5, "application": 0.5}
+
+    # knowledge_type: use existing if valid, else derive from old specificity/cognitive_type
+    kt = topic.get("knowledge_type", "")
+    if kt not in _KNOWLEDGE_TYPE_VALUES:
+        spec = topic.get("specificity", "")
+        cog = topic.get("cognitive_type", "")
+        if spec == "numerical" or cog == "quantitative":
+            topic["knowledge_type"] = "number"
+        elif spec == "procedural" or cog == "procedural":
+            topic["knowledge_type"] = "procedure"
+        elif cog == "comparative":
+            topic["knowledge_type"] = "comparison"
+        elif cog == "causal":
+            topic["knowledge_type"] = "causal"
+        elif spec == "concrete":
+            topic["knowledge_type"] = "term"
+        else:
+            topic["knowledge_type"] = "term"
+
+    # exam_use: use existing if valid list, else derive from old exam_suitability
+    eu = topic.get("exam_use")
+    if not isinstance(eu, list):
+        es = topic.get("exam_suitability", {})
+        eu = []
+        if isinstance(es, dict):
+            if es.get("short_answer", 0) >= 0.5:
+                eu.append("short")
+            if es.get("essay", 0) >= 0.5:
+                eu.append("essay")
+            if es.get("application", 0) >= 0.5:
+                eu.append("application")
+        if topic.get("sequence_dependency") is True:
+            if "essay" not in eu:
+                eu.append("essay")
+            if "application" not in eu:
+                eu.append("application")
+        topic["exam_use"] = eu
+
     if "reason" not in topic:
         topic["reason"] = ""
+    topic.setdefault("source_file", "unknown")
     return topic
 
 
 def _normalize_concept(concept: dict) -> dict:
     if concept.get("type") not in _CONCEPT_TYPE_VALUES:
         concept["type"] = "term"
-    if concept.get("importance") not in _IMPORTANCE_VALUES:
+    if concept.get("importance") not in {"high", "medium", "low"}:
         concept["importance"] = "medium"
     if concept.get("difficulty") not in _DIFFICULTY_VALUES:
         concept["difficulty"] = "medium"
@@ -123,10 +143,24 @@ def _normalize_concept(concept: dict) -> dict:
 def _validate_and_normalize(data: dict) -> dict:
     if not isinstance(data.get("topics"), list) or not isinstance(data.get("key_concepts"), list):
         raise ValueError("Invalid topic extraction JSON: missing topics or key_concepts array")
-    if not isinstance(data.get("tf_misconceptions"), list):
-        data["tf_misconceptions"] = []
-    if not isinstance(data.get("concept_pairs"), list):
-        data["concept_pairs"] = []
+
+    # tf_traps: normalize, with backward compat from tf_misconceptions + concept_pairs
+    if not isinstance(data.get("tf_traps"), list):
+        data["tf_traps"] = _convert_old_tf_fields(
+            data.get("tf_misconceptions", []) if isinstance(data.get("tf_misconceptions"), list) else [],
+            data.get("concept_pairs", []) if isinstance(data.get("concept_pairs"), list) else [],
+        )
+    for trap in data["tf_traps"]:
+        if not isinstance(trap, dict):
+            continue
+        if trap.get("type") not in _TF_TRAP_TYPES:
+            trap["type"] = "misconception"
+        if trap.get("answer") not in ("T", "F"):
+            trap["answer"] = "F"
+        trap.setdefault("source_topic", "")
+        trap.setdefault("statement_seed", "")
+        trap.setdefault("reason", "")
+
     for i, topic in enumerate(data["topics"]):
         if not isinstance(topic, dict) or "name" not in topic:
             raise ValueError(f"Invalid topic extraction JSON: topics[{i}] is not a valid object")
@@ -145,7 +179,6 @@ class TopicExtractorAgent(BaseAgentWorker):
     def run(self, input_text: str) -> str:
         prompt = PROMPT_TEMPLATE.format(text=input_text)
         raw = claude_generate_text(prompt)
-        # JSON 블록 추출
         if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):

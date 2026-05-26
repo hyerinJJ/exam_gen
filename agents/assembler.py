@@ -18,8 +18,6 @@ class AssemblerAgent(BaseAgentWorker):
         exam_path = os.path.join(OUTPUT_DIR, "exam.docx")
         answer_path = os.path.join(OUTPUT_DIR, "answer_key.docx")
 
-        print(f"[Assembler] plan 전달 확인: {plan}")
-
         def _save_with_retry(fn, *args, **kwargs):
             label = args[1] if len(args) > 1 else ""
             while True:
@@ -37,5 +35,5 @@ class AssemblerAgent(BaseAgentWorker):
             "exam": os.path.abspath(exam_path),
             "answer_key": os.path.abspath(answer_path),
         }
-        print(f"[Assembler] 완료 — {result}")
+        print(f"[Assembler] exam.docx / answer_key.docx 저장 완료")
         return json.dumps(result, ensure_ascii=False, indent=2)
