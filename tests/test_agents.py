@@ -428,3 +428,139 @@ def test_file_writers_tf_type():
     from tools.file_writers import TYPE_KO
     assert "tf" in TYPE_KO
     assert TYPE_KO["tf"] == "진위형"
+
+
+# ── grading_seed 관련 테스트 ──────────────────────────────────────────────────
+
+_TF_PLAN_ITEMS = [
+    {
+        "question_type": "tf",
+        "topic_name": "지도학습",
+        "target_concept": "레이블",
+        "difficulty": "medium",
+        "reason": "핵심 구분",
+        "intended_answer": "F",
+        "tf_type": "오해 직격",
+        "misconception_hint": "비지도학습도 레이블이 필요하다는 오해",
+        "topic_meta": {"importance": "high", "scope": "core",
+                       "specificity": "concrete", "cognitive_type": "comparative",
+                       "difficulty": "medium", "sequence_dependency": False,
+                       "exam_suitability": {"short_answer": 0.5, "essay": 0.4, "application": 0.5}},
+    }
+]
+
+_APP_PLAN_ITEMS = [
+    {
+        "question_type": "application",
+        "topic_name": "Work System Framework",
+        "target_concept": "Work System Framework",
+        "difficulty": "hard",
+        "reason": "새로운 맥락 적용",
+        "topic_meta": {"importance": "high", "scope": "core",
+                       "specificity": "abstract", "cognitive_type": "procedural",
+                       "difficulty": "hard", "sequence_dependency": True,
+                       "exam_suitability": {"short_answer": 0.2, "essay": 0.5, "application": 0.9}},
+    }
+]
+
+
+def test_tf_generator_preserves_grading_seed():
+    """TFGenerator가 plan_items의 intended_answer를 grading_seed.expected_answer로 보존해야 함."""
+    mock_text = json.dumps([{"id": "Q1", "type": "tf",
+                             "question": "비지도학습은 레이블이 필요하다. (T/F)"}])
+    with patch("agents.generators.claude_generate_text", return_value=mock_text):
+        from agents.generators import TFGenerator
+        agent = TFGenerator()
+        result = json.loads(agent.run(json.dumps({"plan_items": _TF_PLAN_ITEMS})))
+    assert len(result) == 1
+    seed = result[0].get("grading_seed", {})
+    assert seed.get("expected_answer") == "F"
+    assert seed.get("trap") == "오해 직격"
+    assert "reason" in seed
+
+
+def test_tf_answer_generator_uses_seed_skips_model():
+    """TF AnswerGenerator가 grading_seed.expected_answer 있으면 모델 재판별을 하지 않아야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    q = {"id": "Q1", "type": "tf",
+         "question": "비지도학습은 레이블이 필요하다. (T/F)",
+         "grading_seed": {"expected_answer": "F", "reason": "비지도학습은 레이블 불필요", "trap": "오해 직격"}}
+    with patch("agents.answer_generator.retry_call") as mock_retry:
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        result = agent._generate_tf_answer(q)
+    # grading_seed.reason이 있으므로 retry_call(모델 호출) 없어야 함
+    mock_retry.assert_not_called()
+    assert result["answer"] == "F"
+    assert "비지도학습은 레이블 불필요" in result["rubric"]
+
+
+def test_application_answer_generator_injects_seed_context():
+    """Application AnswerGenerator 프롬프트에 grading_seed 내용이 포함되어야 함."""
+    captured_prompts = []
+
+    def fake_retry(fn):
+        response = MagicMock()
+        response.text = "모범답안 텍스트"
+        # 프롬프트 캡처: generate_content의 contents 인자를 기록
+        try:
+            result = fn()
+            captured_prompts.append(result)
+        except Exception:
+            pass
+        return response
+
+    from agents.answer_generator import AnswerGeneratorAgent, _seed_context
+    q = {"id": "Q1", "type": "application",
+         "question": "Work System Framework를 적용하여 분석하시오.",
+         "grading_seed": {"target_framework": "Work System Framework",
+                          "expected_reasoning": "기술·인간·조직 세 축으로 분석"}}
+
+    seed_ctx = _seed_context(q["grading_seed"])
+    assert "Work System Framework" in seed_ctx
+    assert "기술·인간·조직" in seed_ctx
+
+
+def test_short_answer_generator_uses_seed():
+    """ShortAnswer AnswerGenerator가 grading_seed.expected_answer를 answer로 사용해야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    q = {"id": "Q1", "type": "short",
+         "question": "경사하강법에서 업데이트 속도를 조절하는 하이퍼파라미터는?",
+         "grading_seed": {"expected_answer": "학습률", "accepted_variants": ["learning rate"]}}
+    with patch("agents.answer_generator.retry_call") as mock_retry:
+        mock_retry.return_value = MagicMock(text="채점기준")
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        result = agent._generate_short_answer(q)
+    assert result["answer"] == "학습률"
+    # 답안 생성용 모델 호출 없음 (루브릭 생성만 1회)
+    assert mock_retry.call_count == 1
+
+
+def test_grading_seed_not_in_answer_generator_output():
+    """AnswerGeneratorAgent 출력 JSON에 grading_seed가 포함되지 않아야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    questions = [{"id": "Q1", "type": "short",
+                  "question": "테스트 문제?",
+                  "grading_seed": {"expected_answer": "테스트답", "accepted_variants": []}}]
+    with patch("agents.answer_generator.retry_call") as mock_retry:
+        mock_retry.return_value = MagicMock(text="채점기준")
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        output = json.loads(agent.run(json.dumps(questions, ensure_ascii=False)))
+    assert "grading_seed" not in output[0]
+    assert output[0]["answer"] == "테스트답"
+
+
+def test_grading_seed_absent_fallback():
+    """grading_seed 없는 기존 입력도 정상 동작해야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    q = {"id": "Q1", "type": "short", "question": "테스트 문제?"}
+    with patch("agents.answer_generator.retry_call") as mock_retry:
+        mock_retry.return_value = MagicMock(text="답변")
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        result = agent._generate_short_answer(q)
+    # grading_seed 없으면 모델 호출 2회 (답안 + 루브릭)
+    assert mock_retry.call_count == 2
+    assert result["answer"] == "답변"

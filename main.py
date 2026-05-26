@@ -160,7 +160,8 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
     if fmt_parts:
         print(f"  포맷 설정: {' | '.join(fmt_parts)}")
 
-    etc_parts = [f"{k}={v}" for k, v in plan.items() if k not in _COUNT_KEYS and k not in _FORMAT_KEYS]
+    _HIDDEN_KEYS = {"question_plan"}
+    etc_parts = [f"{k}={v}" for k, v in plan.items() if k not in _COUNT_KEYS and k not in _FORMAT_KEYS and k not in _HIDDEN_KEYS]
     if etc_parts:
         print(f"  기타 요구사항: {' | '.join(etc_parts)}")
 

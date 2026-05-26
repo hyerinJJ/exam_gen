@@ -1,341 +1,76 @@
 import os
-import re
 from docx import Document
-from docx.shared import Pt, Cm, RGBColor
+from docx.shared import Pt, Cm, Mm
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-
-# ── 색상 시스템 ───────────────────────────────────────────────
-BLACK    = "000000"
-DARK     = "1A1A1A"
-MID      = "555555"
-LIGHT    = "AAAAAA"
-RULE     = "CCCCCC"
-OFFWHITE = "F7F7F7"
-WHITE    = "FFFFFF"
+from docx.enum.section import WD_SECTION
 
 _PAGE_BREAK_KEYWORDS = ("1개", "한 페이지", "페이지당 1", "하나당", "1문제")
-_CONTENT_W = 16.0  # A4(21cm) - 여백 2.5cm×2
+
+FONT_COVER = "HY견명조"
+FONT_BODY  = "HY신명조"
+_SPACING_BODY = -4  # twips ≈ 0.2pt narrower
+
+# 출력 순서: tf → short → essay → application
+_TYPE_ORDER = ["tf", "short", "essay", "application"]
 
 TYPE_KO = {
     "short": "단답형", "essay": "에세이형", "application": "응용형",
     "tf": "진위형", "list": "나열형", "order": "순서형",
 }
 
+# 문제 헤더에 표시할 유형명
+_TYPE_DISPLAY = {
+    "tf":          "True/False",
+    "short":       "단답형",
+    "essay":       "",   # 유형 드러내지 않음
+    "application": "",   # 유형 드러내지 않음
+}
 
-# ── 기본 유틸 ─────────────────────────────────────────────────
+# 문제 헤더에 표시할 지시문
+_TYPE_GUIDE = {
+    "tf":          "(빈칸에 T 또는 F를 작성)",
+    "short":       "",
+    "essay":       "",
+    "application": "",
+}
 
-def _rgb(h: str) -> RGBColor:
-    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
+# ── 폰트 / 공통 유틸 ──────────────────────────────────────────────────────────
 
-def _dxa(cm: float) -> str:
-    return str(round(cm * 566.929))
-
-
-def _set_font(run, size: int = 12, bold: bool = False,
-              color: str = None, italic: bool = False):
-    run.font.name = "맑은 고딕"
+def _set_font(run, size: int, bold: bool = False, font_name: str = FONT_BODY,
+              italic: bool = False, underline: bool = False):
+    run.font.name = font_name
     run.font.size = Pt(size)
     run.font.bold = bold
     run.font.italic = italic
-    if color:
-        run.font.color.rgb = _rgb(color)
+    run.font.underline = underline
     rPr = run._r.get_or_add_rPr()
     rFonts = rPr.get_or_add_rFonts()
-    rFonts.set(qn("w:eastAsia"), "맑은 고딕")
+    for attr in ("w:eastAsia", "w:hAnsi", "w:ascii"):
+        rFonts.set(qn(attr), font_name)
+    if font_name == FONT_BODY:
+        sp_el = OxmlElement("w:spacing")
+        sp_el.set(qn("w:val"), str(_SPACING_BODY))
+        rPr.append(sp_el)
 
 
-def _set_margins(doc: Document, cm: float = 2.5):
-    s = doc.sections[0]
-    for attr in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
-        setattr(s, attr, Cm(cm))
 
+def _tf_blank_run(paragraph, size: int = 12):
+    """TF 답란: 공백 + underline=True (FONT_BODY, underscore 이중선 없음)."""
+    run = paragraph.add_run("       ")
+    run.font.name = FONT_BODY
+    run.font.size = Pt(size)
+    run.font.underline = True
+    rPr = run._r.get_or_add_rPr()
+    rFonts = rPr.get_or_add_rFonts()
+    for attr in ("w:eastAsia", "w:hAnsi", "w:ascii"):
+        rFonts.set(qn(attr), FONT_BODY)
+    sp_el = OxmlElement("w:spacing")
+    sp_el.set(qn("w:val"), str(_SPACING_BODY))
+    rPr.append(sp_el)
 
-def _page_break(doc):
-    p = doc.add_paragraph()
-    r = OxmlElement("w:r")
-    br = OxmlElement("w:br")
-    br.set(qn("w:type"), "page")
-    r.append(br)
-    p._p.append(r)
-
-
-# ── XML 직접 조작 유틸 ────────────────────────────────────────
-
-def set_cell_shading(cell, fill_hex: str):
-    tcPr = cell._tc.get_or_add_tcPr()
-    shd = OxmlElement("w:shd")
-    shd.set(qn("w:val"), "clear")
-    shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"), fill_hex)
-    tcPr.append(shd)
-
-
-def set_cell_border(cell, sides: dict):
-    """sides 예: {"left": {"val":"single","sz":"20","color":"000000"}}"""
-    tcPr = cell._tc.get_or_add_tcPr()
-    tcBorders = OxmlElement("w:tcBorders")
-    for side, attrs in sides.items():
-        b = OxmlElement(f"w:{side}")
-        b.set(qn("w:val"),   attrs.get("val",   "single"))
-        b.set(qn("w:sz"),    attrs.get("sz",    "4"))
-        b.set(qn("w:space"), attrs.get("space", "0"))
-        b.set(qn("w:color"), attrs.get("color", BLACK))
-        tcBorders.append(b)
-    tcPr.append(tcBorders)
-
-
-def add_horizontal_line(doc, color: str = BLACK, sz: str = "12"):
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after = Pt(0)
-    pPr = p._p.get_or_add_pPr()
-    pBdr = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), sz)
-    bottom.set(qn("w:space"), "1")
-    bottom.set(qn("w:color"), color)
-    pBdr.append(bottom)
-    pPr.append(pBdr)
-    return p
-
-
-# ── 테이블 공통 유틸 ──────────────────────────────────────────
-
-def _make_table(doc, rows, cols, width_cm=None, center=True):
-    table = doc.add_table(rows=rows, cols=cols)
-    tbl = table._tbl
-    tblPr = tbl.find(qn("w:tblPr"))
-    if tblPr is None:
-        tblPr = OxmlElement("w:tblPr")
-        tbl.insert(0, tblPr)
-    if center:
-        jc = OxmlElement("w:jc")
-        jc.set(qn("w:val"), "center")
-        tblPr.append(jc)
-    if width_cm is not None:
-        tblW = OxmlElement("w:tblW")
-        tblW.set(qn("w:w"), _dxa(width_cm))
-        tblW.set(qn("w:type"), "dxa")
-        tblPr.append(tblW)
-    layout = OxmlElement("w:tblLayout")
-    layout.set(qn("w:type"), "fixed")
-    tblPr.append(layout)
-    return table
-
-
-def _set_row_height(row, cm: float):
-    trPr = row._tr.get_or_add_trPr()
-    trH = OxmlElement("w:trHeight")
-    trH.set(qn("w:val"), _dxa(cm))
-    trH.set(qn("w:hRule"), "exact")
-    trPr.append(trH)
-
-
-def _set_table_borders(table, val="single", sz="4", color=BLACK):
-    tbl = table._tbl
-    tblPr = tbl.find(qn("w:tblPr"))
-    if tblPr is None:
-        tblPr = OxmlElement("w:tblPr")
-        tbl.insert(0, tblPr)
-    tblBorders = OxmlElement("w:tblBorders")
-    for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        b = OxmlElement(f"w:{side}")
-        b.set(qn("w:val"), val)
-        b.set(qn("w:sz"), sz)
-        b.set(qn("w:space"), "0")
-        b.set(qn("w:color"), color)
-        tblBorders.append(b)
-    tblPr.append(tblBorders)
-
-
-def _set_cell_width(cell, cm: float):
-    tcPr = cell._tc.get_or_add_tcPr()
-    tcW = OxmlElement("w:tcW")
-    tcW.set(qn("w:w"), _dxa(cm))
-    tcW.set(qn("w:type"), "dxa")
-    tcPr.append(tcW)
-
-
-def _set_cell_margin(cell, top=80, bottom=80, left=120, right=80):
-    tcPr = cell._tc.get_or_add_tcPr()
-    tcMar = OxmlElement("w:tcMar")
-    for side, val in (("top", top), ("bottom", bottom),
-                      ("left", left), ("right", right)):
-        m = OxmlElement(f"w:{side}")
-        m.set(qn("w:w"), str(val))
-        m.set(qn("w:type"), "dxa")
-        tcMar.append(m)
-    tcPr.append(tcMar)
-
-
-def _cp(cell, text="", size=10, bold=False, color=DARK,
-        align=WD_ALIGN_PARAGRAPH.CENTER, italic=False,
-        sb=0, sa=0, indent_cm=0, first=True):
-    """셀 내 문단 추가. first=True 이면 기존 첫 문단 사용."""
-    p = cell.paragraphs[0] if (first and cell.paragraphs) else cell.add_paragraph()
-    p.alignment = align
-    p.paragraph_format.space_before = Pt(sb)
-    p.paragraph_format.space_after = Pt(sa)
-    if indent_cm:
-        p.paragraph_format.left_indent = Cm(indent_cm)
-    if text:
-        run = p.add_run(text)
-        _set_font(run, size=size, bold=bold, color=color, italic=italic)
-    return p
-
-
-# ── 표지 구성 요소 ────────────────────────────────────────────
-
-def _logo_table(doc, school: str):
-    table = _make_table(doc, 1, 1, width_cm=4.0)
-    _set_row_height(table.rows[0], 3.0)
-    cell = table.cell(0, 0)
-    set_cell_shading(cell, OFFWHITE)
-    set_cell_border(cell, {
-        "top":    {"val": "single", "sz": "4", "color": RULE},
-        "left":   {"val": "single", "sz": "4", "color": RULE},
-        "bottom": {"val": "single", "sz": "4", "color": RULE},
-        "right":  {"val": "single", "sz": "4", "color": RULE},
-    })
-    _cp(cell, "LOGO", size=13, bold=True, color=LIGHT, sb=24, sa=4)
-    _cp(cell, school, size=9, color=LIGHT, first=False, sa=4)
-
-
-def _badge_table(doc, text: str):
-    table = _make_table(doc, 1, 1, width_cm=5.0)
-    cell = table.cell(0, 0)
-    set_cell_shading(cell, BLACK)
-    _cp(cell, text, size=13, bold=True, color=WHITE, sb=6, sa=6)
-
-
-def _info_table(doc, fmt: dict):
-    table = _make_table(doc, 2, 3, width_cm=_CONTENT_W, center=False)
-    _set_table_borders(table, sz="4", color=RULE)
-    col_w = _CONTENT_W / 3
-    headers = ["담당교수", "시험일시 및 제한시간", "학기"]
-    exam_dt = fmt.get("exam_date") or ""
-    tl = fmt.get("time_limit") or ""
-    dt_str = f"{exam_dt} / {tl}".strip(" /") if (exam_dt or tl) else ""
-    data = [fmt.get("professor") or "", dt_str, fmt.get("semester") or ""]
-    for i, (hdr, val) in enumerate(zip(headers, data)):
-        hc = table.cell(0, i)
-        set_cell_shading(hc, DARK)
-        _set_cell_width(hc, col_w)
-        _cp(hc, hdr, size=9, bold=True, color=WHITE, sb=4, sa=4)
-        dc = table.cell(1, i)
-        set_cell_shading(dc, OFFWHITE)
-        _set_cell_width(dc, col_w)
-        _cp(dc, val, size=9, color=DARK, sb=4, sa=4)
-
-
-def _examinee_table(doc):
-    table = _make_table(doc, 2, 4, width_cm=_CONTENT_W, center=False)
-    _set_table_borders(table, sz="4", color=RULE)
-    col_widths = [3.0, 5.0, 3.0, 5.0]
-    rows_data = [
-        [("학번", True), ("", False), ("이름", True), ("", False)],
-        [("학과", True), ("", False), ("총점", True), ("         / 100", False)],
-    ]
-    for ri, row_data in enumerate(rows_data):
-        for ci, (text, is_header) in enumerate(row_data):
-            cell = table.cell(ri, ci)
-            _set_cell_width(cell, col_widths[ci])
-            if is_header:
-                set_cell_shading(cell, DARK)
-                _cp(cell, text, size=9, bold=True, color=WHITE, sb=6, sa=6)
-            else:
-                set_cell_shading(cell, WHITE)
-                _cp(cell, text, size=9, color=DARK, sb=6, sa=6)
-
-
-def _oath_table(doc):
-    table = _make_table(doc, 1, 1, width_cm=_CONTENT_W, center=False)
-    _set_table_borders(table, sz="8", color=DARK)
-    cell = table.cell(0, 0)
-    set_cell_shading(cell, OFFWHITE)
-    _set_cell_margin(cell, top=120, bottom=120, left=180, right=180)
-    _cp(cell, "— 정직 서약 —", size=11, bold=True, color=DARK, sb=4, sa=4)
-    _cp(cell, "본인은 이 시험에서 어떠한 부정행위도 하지 않을 것을 서약합니다.",
-        size=9, color=DARK, first=False, sb=2, sa=2)
-    _cp(cell,
-        "I pledge that I will not engage in any form of academic dishonesty during this exam.",
-        size=9, italic=True, color=MID, first=False, sb=2, sa=4)
-    _cp(cell, "서명 (Signature) : ___________________",
-        size=9, color=DARK, first=False, sb=4, sa=4)
-
-
-def _add_cover_page(doc: Document, fmt: dict):
-    school      = fmt.get("school")      or "○○대학교"
-    department  = fmt.get("department")  or ""
-    title       = fmt.get("title")       or "시험지"
-    english_name = fmt.get("english_name") or ""
-    course_info = fmt.get("course_info") or "시험"
-
-    doc.add_paragraph()
-    _logo_table(doc, school)
-    doc.add_paragraph()
-
-    add_horizontal_line(doc, color=BLACK, sz="18")
-    doc.add_paragraph()
-
-    p_s = doc.add_paragraph()
-    p_s.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_s.paragraph_format.space_after = Pt(2)
-    _set_font(p_s.add_run(school), size=11, color=MID)
-
-    if department:
-        p_d = doc.add_paragraph()
-        p_d.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p_d.paragraph_format.space_after = Pt(4)
-        _set_font(p_d.add_run(department), size=9, color=LIGHT)
-
-    add_horizontal_line(doc, color=RULE, sz="4")
-    doc.add_paragraph()
-
-    p_t = doc.add_paragraph()
-    p_t.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_t.paragraph_format.space_after = Pt(6)
-    _set_font(p_t.add_run(title), size=22, bold=True, color=BLACK)
-
-    if english_name:
-        p_e = doc.add_paragraph()
-        p_e.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p_e.paragraph_format.space_after = Pt(8)
-        _set_font(p_e.add_run(english_name), size=11, italic=True, color=MID)
-
-    doc.add_paragraph()
-    _badge_table(doc, course_info)
-    doc.add_paragraph()
-
-    add_horizontal_line(doc, color=RULE, sz="4")
-    doc.add_paragraph()
-
-    _info_table(doc, fmt)
-    doc.add_paragraph()
-
-    _examinee_table(doc)
-    doc.add_paragraph()
-
-    _oath_table(doc)
-    doc.add_paragraph()
-
-    add_horizontal_line(doc, color=BLACK, sz="8")
-
-    p_note = doc.add_paragraph()
-    p_note.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_note.paragraph_format.space_before = Pt(4)
-    _set_font(p_note.add_run(
-        "시험지를 넘기기 전, 위 정보를 모두 기재하였는지 확인하십시오."),
-        size=9, italic=True, color=LIGHT)
-
-    _page_break(doc)
-
-
-# ── 헤더 / 푸터 ───────────────────────────────────────────────
 
 def _fld_run(fld_type: str):
     r = OxmlElement("w:r")
@@ -354,120 +89,255 @@ def _instr_run(text: str):
     return r
 
 
-def _add_exam_header(doc: Document, left_text: str, right_text: str,
-                     different_first: bool = False):
-    section = doc.sections[0]
-    section.different_first_page_header_footer = different_first
-    header = section.header
-    header.is_linked_to_previous = False
-    p = header.paragraphs[0]
-    p.clear()
-    p.paragraph_format.space_after = Pt(4)
+def _cover_info_line(doc: Document, label: str, size: int = 16,
+                     font_name: str = FONT_COVER, space_after: int = 8):
+    """라벨 + 밑줄 한 줄 — 왼쪽 공백 4칸 들여쓰기."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(space_after)
 
-    pPr = p._p.get_or_add_pPr()
-    pBdr = OxmlElement("w:pBdr")
-    bot = OxmlElement("w:bottom")
-    bot.set(qn("w:val"), "single")
-    bot.set(qn("w:sz"), "12")
-    bot.set(qn("w:space"), "1")
-    bot.set(qn("w:color"), BLACK)
-    pBdr.append(bot)
-    pPr.append(pBdr)
+    def _r(text, underline=False):
+        run = p.add_run(text)
+        run.font.name = font_name
+        run.font.size = Pt(size)
+        run.font.underline = underline
+        rPr = run._r.get_or_add_rPr()
+        rFonts = rPr.get_or_add_rFonts()
+        for attr in ("w:eastAsia", "w:hAnsi", "w:ascii"):
+            rFonts.set(qn(attr), font_name)
 
-    tabs = OxmlElement("w:tabs")
-    tab = OxmlElement("w:tab")
-    tab.set(qn("w:val"), "right")
-    tab.set(qn("w:pos"), _dxa(_CONTENT_W))
-    tabs.append(tab)
-    pPr.append(tabs)
-
-    _set_font(p.add_run(left_text), size=9, color=DARK)
-    _set_font(p.add_run("\t"), size=9)
-    _set_font(p.add_run(right_text), size=9, color=DARK)
+    _r(" " * 26)
+    _r(label + " ")
+    _r(" " * 22, underline=True)
 
 
-def _add_exam_footer(doc: Document, extra: str = "무단 복제 금지"):
-    section = doc.sections[0]
-    footer = section.footer
-    footer.is_linked_to_previous = False
-    p = footer.paragraphs[0]
-    p.clear()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.space_before = Pt(4)
-
-    pPr = p._p.get_or_add_pPr()
-    pBdr = OxmlElement("w:pBdr")
-    top = OxmlElement("w:top")
-    top.set(qn("w:val"), "single")
-    top.set(qn("w:sz"), "4")
-    top.set(qn("w:space"), "1")
-    top.set(qn("w:color"), RULE)
-    pBdr.append(top)
-    pPr.append(pBdr)
-
-    _set_font(p.add_run("페이지 "), size=9, color=LIGHT)
-    for node in (_fld_run("begin"), _instr_run(" PAGE "),
-                 _fld_run("separate"), _fld_run("end")):
-        p._p.append(node)
-    _set_font(p.add_run(" / "), size=9, color=LIGHT)
-    for node in (_fld_run("begin"), _instr_run(" NUMPAGES "),
-                 _fld_run("separate"), _fld_run("end")):
-        p._p.append(node)
-    _set_font(p.add_run(f"  |  {extra}"), size=9, color=LIGHT)
+def _page_break(doc: Document):
+    p = doc.add_paragraph()
+    r = OxmlElement("w:r")
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    r.append(br)
+    p._p.append(r)
 
 
-# ── 시험지 본문 구성 요소 ─────────────────────────────────────
-
-def _add_section_header(doc, section_name: str, score_note: str):
-    doc.add_paragraph()
-    table = _make_table(doc, 1, 1, width_cm=_CONTENT_W, center=False)
-    cell = table.cell(0, 0)
-    set_cell_shading(cell, DARK)
-    set_cell_border(cell, {
-        "left":   {"val": "single", "sz": "24", "color": BLACK},
-        "top":    {"val": "nil",    "sz": "0",  "color": "auto"},
-        "right":  {"val": "nil",    "sz": "0",  "color": "auto"},
-        "bottom": {"val": "nil",    "sz": "0",  "color": "auto"},
-    })
-    _set_cell_margin(cell, top=60, bottom=60, left=120, right=80)
-    p = cell.paragraphs[0]
-    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    _set_font(p.add_run(f"  ▶  {section_name}  |  {score_note}"),
-              size=10, bold=True, color=WHITE)
-    doc.add_paragraph()
+def _set_margins(section, cm: float = 2.54):
+    for attr in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
+        setattr(section, attr, Cm(cm))
+    section.page_width  = Mm(210)
+    section.page_height = Mm(297)
 
 
-def _add_answer_box(doc, question: dict):
-    q_type = question.get("type", "short")
-    if q_type == "tf":
-        table = _make_table(doc, 1, 2, width_cm=8.0, center=False)
-        _set_table_borders(table, val="single", sz="4", color=RULE)
-        for ci, label in enumerate(("T (참)", "F (거짓)")):
-            cell = table.cell(0, 0) if ci == 0 else table.cell(0, 1)
-            _set_cell_width(cell, 4.0)
-            _set_row_height(table.rows[0], 1.2)
-            set_cell_shading(cell, OFFWHITE)
-            _cp(cell, label, size=11, bold=True, color=DARK,
-                align=WD_ALIGN_PARAGRAPH.CENTER, sb=4, sa=4)
+# ── 표지 ──────────────────────────────────────────────────────────────────────
+
+def _add_cover_page(doc: Document, fmt: dict):
+    """PDF 양식과 동일한 표지."""
+    title        = fmt.get("title")        or "시험지"
+    english_name = fmt.get("english_name") or ""
+    course_info  = fmt.get("course_info")  or ""
+    exam_date    = fmt.get("exam_date")    or ""
+    time_limit   = fmt.get("time_limit")   or ""
+    semester     = fmt.get("semester")     or ""
+
+    # 시험종류 중복 체크
+    def _norm(s: str) -> str:
+        return s.replace(" ", "").lower()
+
+    show_course_info = bool(
+        course_info
+        and _norm(course_info) not in _norm(title)
+        and _norm(course_info) not in _norm(english_name)
+    )
+
+    for _ in range(5):
         doc.add_paragraph()
-        return
-    if q_type == "short":
-        row_count = 1
-    elif q_type == "application":
-        row_count = 10
-    elif q_type in ("list", "order"):
-        row_count = question.get("count") or _detect_list_count(question.get("question", ""))
-    else:
-        row_count = 8
-    table = _make_table(doc, row_count, 1, width_cm=_CONTENT_W, center=False)
-    _set_table_borders(table, val="single", sz="4", color=RULE)
-    for row in table.rows:
-        _set_row_height(row, 1.0)
-        set_cell_shading(row.cells[0], OFFWHITE)
+
+    # 과목명 한글 22pt center
+    p_title = doc.add_paragraph()
+    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_title.paragraph_format.space_after = Pt(4)
+    _set_font(p_title.add_run(title), size=22, font_name=FONT_COVER)
+
+    # 과목명 영문 22pt center
+    if english_name:
+        p_eng = doc.add_paragraph()
+        p_eng.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_eng.paragraph_format.space_after = Pt(6)
+        _set_font(p_eng.add_run(english_name), size=22, font_name=FONT_COVER)
+
+    # 학기
+    if semester:
+        p_sem = doc.add_paragraph()
+        p_sem.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_sem.paragraph_format.space_after = Pt(4)
+        _set_font(p_sem.add_run(semester), size=16, font_name=FONT_COVER)
+
+    # 시험 종류 (중복 아닐 때만)
+    if show_course_info:
+        p_ci = doc.add_paragraph()
+        p_ci.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_ci.paragraph_format.space_after = Pt(8)
+        _set_font(p_ci.add_run(course_info), size=16, font_name=FONT_COVER)
+
+    # 시험 일시
+    if exam_date:
+        doc.add_paragraph()
+        p_dt = doc.add_paragraph()
+        p_dt.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_dt.paragraph_format.space_after = Pt(4)
+        _set_font(p_dt.add_run(f"시험 일시: {exam_date}"), size=16, font_name=FONT_COVER)
+
+    # 제한시간 · 총점 (시험 일시 다음 줄)
+    extra_parts = []
+    if time_limit:
+        extra_parts.append(f"제한시간: {time_limit}")
+    if fmt.get("total_score"):
+        extra_parts.append(f"총점: {fmt['total_score']}점")
+    if extra_parts:
+        if not exam_date:
+            doc.add_paragraph()
+        p_extra = doc.add_paragraph()
+        p_extra.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_extra.paragraph_format.space_after = Pt(4)
+        _set_font(p_extra.add_run("  /  ".join(extra_parts)), size=16, font_name=FONT_COVER)
+
+    for _ in range(2):
+        doc.add_paragraph()
+
+    # ── ※인적 사항 ──────────────────────────────────────────────────
+    p_hdr1 = doc.add_paragraph()
+    p_hdr1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_hdr1.paragraph_format.space_after = Pt(6)
+    _set_font(p_hdr1.add_run("※인적 사항"), size=16, font_name=FONT_COVER)
+
+    _cover_info_line(doc, "학번:", size=16, font_name=FONT_COVER, space_after=4)
+    _cover_info_line(doc, "이름:", size=16, font_name=FONT_COVER, space_after=10)
+
     doc.add_paragraph()
 
+    # ── ※정직 서약 ──────────────────────────────────────────────────
+    p_hdr2 = doc.add_paragraph()
+    p_hdr2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_hdr2.paragraph_format.space_after = Pt(8)
+    _set_font(p_hdr2.add_run("※정직 서약"), size=16, font_name=FONT_COVER)
 
-# ── 기존 로직 유지 ────────────────────────────────────────────
+    p_oath = doc.add_paragraph()
+    p_oath.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_oath.paragraph_format.space_after = Pt(10)
+    _set_font(
+        p_oath.add_run(
+            "본인은 이 시험에서 어떠한 부정행위도 하지 않을 것을 서약하며, "
+            "부정행위 적발 시 이에 따른 모든 책임을 감수할 것에 동의합니다."
+        ),
+        size=16, font_name=FONT_COVER,
+    )
+
+    _cover_info_line(doc, "서명:", size=16, font_name=FONT_COVER, space_after=0)
+
+
+# ── 섹션 설정 ─────────────────────────────────────────────────────────────────
+
+def _configure_cover_section(section):
+    """표지 섹션: 헤더/푸터 없음."""
+    section.different_first_page_header_footer = True
+    for hdr_ftr in (section.header, section.footer,
+                    section.first_page_header, section.first_page_footer):
+        try:
+            hdr_ftr.is_linked_to_previous = False
+            if hdr_ftr.paragraphs:
+                hdr_ftr.paragraphs[0].clear()
+        except Exception:
+            pass
+
+
+def _page_num_run(fld_type: str | None, instr: str | None = None, size_pt: int = 16):
+    """PAGE 필드용 런에 폰트 크기를 직접 지정."""
+    r = OxmlElement("w:r")
+    rPr = OxmlElement("w:rPr")
+    for tag in ("w:sz", "w:szCs"):
+        el = OxmlElement(tag)
+        el.set(qn("w:val"), str(size_pt * 2))  # half-points
+        rPr.append(el)
+    r.append(rPr)
+    if instr is not None:
+        el = OxmlElement("w:instrText")
+        el.set(qn("xml:space"), "preserve")
+        el.text = instr
+        r.append(el)
+    else:
+        fc = OxmlElement("w:fldChar")
+        fc.set(qn("w:fldCharType"), fld_type)
+        r.append(fc)
+    return r
+
+
+def _add_body_section(doc: Document):
+    """표지 다음 새 섹션: 우상단 PAGE 번호(1부터), 푸터/라인 없음."""
+    sec = doc.add_section(WD_SECTION.NEW_PAGE)
+    _set_margins(sec)
+
+    sectPr = sec._sectPr
+    pgNumType = OxmlElement("w:pgNumType")
+    pgNumType.set(qn("w:fmt"), "decimal")
+    pgNumType.set(qn("w:start"), "1")
+    sectPr.append(pgNumType)
+
+    sec.different_first_page_header_footer = False
+    hdr = sec.header
+    hdr.is_linked_to_previous = False
+    p = hdr.paragraphs[0] if hdr.paragraphs else hdr.add_paragraph()
+    p.clear()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p.paragraph_format.space_after = Pt(4)
+    for node in (_page_num_run("begin"), _page_num_run(None, " PAGE "),
+                 _page_num_run("separate"), _page_num_run("end")):
+        p._p.append(node)
+
+    ftr = sec.footer
+    ftr.is_linked_to_previous = False
+    if ftr.paragraphs:
+        ftr.paragraphs[0].clear()
+
+
+# ── 본문 유틸 ─────────────────────────────────────────────────────────────────
+
+def _add_writing_space(doc: Document, count: int = 8):
+    """빈 쓰기 공간 (라인 없음)."""
+    for _ in range(count):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after  = Pt(0)
+        run = p.add_run(" ")
+        run.font.size = Pt(18)
+
+
+def _group_by_type(questions: list) -> list:
+    """
+    그룹 규칙:
+    - tf / short  : 동일 유형 전체를 하나의 그룹으로 (한 페이지 내)
+    - essay / application : 각 문제가 독립 그룹 (문제당 한 페이지)
+    순서: tf → short → essay → application
+    """
+    buckets: dict = {}
+    for q in questions:
+        t = q.get("type", "short")
+        buckets.setdefault(t, []).append(q)
+
+    result = []
+    for t in _TYPE_ORDER:
+        if t not in buckets:
+            continue
+        if t in ("tf", "short"):
+            result.append((t, buckets[t]))
+        else:
+            for q in buckets[t]:
+                result.append((t, [q]))
+    # 알 수 없는 타입
+    for t, qs in buckets.items():
+        if t not in _TYPE_ORDER:
+            result.append((t, qs))
+    return result
+
+
+# ── 입력 해석 ─────────────────────────────────────────────────────────────────
 
 def _interpret_format(plan: dict) -> dict:
     if not plan:
@@ -475,7 +345,7 @@ def _interpret_format(plan: dict) -> dict:
             "title": None, "course_info": None, "professor": None,
             "page_break_per_question": False, "school": None,
             "department": None, "english_name": None,
-            "exam_date": None, "time_limit": None, "semester": None,
+            "exam_date": None, "time_limit": None, "total_score": None, "semester": None,
         }
     layout = str(plan.get("레이아웃") or "").lower()
     page_break = any(kw in layout for kw in _PAGE_BREAK_KEYWORDS)
@@ -487,65 +357,110 @@ def _interpret_format(plan: dict) -> dict:
         "school":      plan.get("학교") or None,
         "department":  plan.get("학과") or None,
         "english_name": plan.get("영문명") or None,
-        "exam_date":   plan.get("시험일시") or None,
-        "time_limit":  plan.get("제한시간") or None,
-        "semester":    plan.get("학기") or None,
+        "exam_date":    plan.get("시험일시") or None,
+        "time_limit":   plan.get("제한시간") or None,
+        "total_score":  plan.get("총점") or None,
+        "semester":     plan.get("학기") or None,
     }
 
 
-def _detect_list_count(question_text: str) -> int:
-    m = re.search(r'(\d+)\s*(?:가지|개|단계|항목|종류)', question_text)
-    if m:
-        return min(int(m.group(1)), 8)
-    return 3
-
-
-# ── 메인 함수 ─────────────────────────────────────────────────
+# ── 메인 함수 ─────────────────────────────────────────────────────────────────
 
 def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fmt = _interpret_format(plan or {})
 
     doc = Document()
-    _set_margins(doc)
+    sec0 = doc.sections[0]
+    _set_margins(sec0)
+    _configure_cover_section(sec0)
 
-    dept  = fmt.get("department") or ""
-    title = fmt.get("title") or "시험지"
-    prof  = fmt.get("professor") or ""
-    left_hdr  = f"{dept} | {title}" if dept else title
-    right_hdr = f"담당교수: {prof}" if prof else ""
-    _add_exam_header(doc, left_hdr, right_hdr, different_first=True)
-    _add_exam_footer(doc, "무단 복제 금지")
     _add_cover_page(doc, fmt)
+    _add_body_section(doc)
 
     n = len(questions)
     points_per_q = round(100 / n) if n > 0 else 10
-    page_break = fmt["page_break_per_question"]
-    prev_type = None
 
-    for i, q in enumerate(questions, start=1):
-        q_type    = q.get("type", "short")
-        q_type_ko = TYPE_KO.get(q_type, q_type)
+    grouped = _group_by_type(questions)
+    total_groups = len(grouped)
 
-        if q_type != prev_type:
-            _add_section_header(doc, q_type_ko, f"각 문항 {points_per_q}점")
-            prev_type = q_type
+    for group_idx, (q_type, q_list) in enumerate(grouped):
+        group_num   = group_idx + 1
+        is_last     = group_idx == total_groups - 1
+        group_points = points_per_q * len(q_list)
+        type_display = _TYPE_DISPLAY.get(q_type, TYPE_KO.get(q_type, q_type))
+        type_guide   = _TYPE_GUIDE.get(q_type, "")
 
-        p_num = doc.add_paragraph()
-        p_num.paragraph_format.space_before = Pt(10)
-        p_num.paragraph_format.space_after = Pt(6)
-        _set_font(p_num.add_run(f"Q{i}."), size=11, bold=True, color=BLACK)
-        _set_font(p_num.add_run(f"  [{points_per_q}점]"), size=10, bold=True, color=DARK)
-        _set_font(p_num.add_run(f"  ({q_type_ko})"), size=9, color=LIGHT)
+        if q_type in ("tf", "short"):
+            # ── TF / 단답형: 그룹 헤더 + 소문항 목록 ────────────────
+            p_hdr = doc.add_paragraph()
+            p_hdr.paragraph_format.space_before = Pt(16)
+            p_hdr.paragraph_format.space_after  = Pt(8)
+            _set_font(p_hdr.add_run(f"문제 {group_num}"), size=12, bold=True)
+            suffix = f" ({group_points}점) {type_display}"
+            if type_guide:
+                suffix += f" {type_guide}"
+            _set_font(p_hdr.add_run(suffix), size=12)
 
-        p_q = doc.add_paragraph()
-        p_q.paragraph_format.space_after = Pt(8)
-        _set_font(p_q.add_run(q.get("question", "")), size=11, color=DARK)
+            for sub_num, q in enumerate(q_list, start=1):
+                q_text = q.get("question", "")
 
-        _add_answer_box(doc, q)
+                if q_type == "tf":
+                    p_q = doc.add_paragraph()
+                    p_q.paragraph_format.space_before = Pt(4)
+                    p_q.paragraph_format.space_after  = Pt(8)
+                    _set_font(p_q.add_run(f"({sub_num}) "), size=12)
+                    _tf_blank_run(p_q, size=12)
+                    _set_font(p_q.add_run(" "), size=12)
+                    _set_font(p_q.add_run(q_text), size=12)
 
-        if page_break and i < n:
+                else:  # short
+                    p_q = doc.add_paragraph()
+                    p_q.paragraph_format.space_before = Pt(4)
+                    p_q.paragraph_format.space_after  = Pt(4)
+                    _set_font(p_q.add_run(f"({sub_num}) "), size=12)
+                    _set_font(p_q.add_run(q_text), size=12)
+
+                    p_ans = doc.add_paragraph()
+                    p_ans.paragraph_format.left_indent = Cm(1.0)
+                    p_ans.paragraph_format.space_after = Pt(10)
+                    _set_font(p_ans.add_run("답: (                         )"), size=12)
+
+        else:
+            # ── 에세이 / 응용형: 질문 텍스트를 헤더에 인라인 ────────
+            q_text = q_list[0].get("question", "")
+
+            p_hdr = doc.add_paragraph()
+            p_hdr.paragraph_format.space_before = Pt(16)
+            p_hdr.paragraph_format.space_after  = Pt(10)
+            _set_font(p_hdr.add_run(f"문제 {group_num}"), size=12, bold=True)
+            _set_font(p_hdr.add_run(f" ({group_points}점) {q_text}"), size=12)
+
+            p_ans_label = doc.add_paragraph()
+            p_ans_label.paragraph_format.space_before = Pt(4)
+            p_ans_label.paragraph_format.space_after  = Pt(4)
+            _set_font(p_ans_label.add_run("답:"), size=12)
+
+            blank_count = 12 if q_type == "application" else 8
+            _add_writing_space(doc, blank_count)
+            doc.add_paragraph()
+
+        if not is_last:
             _page_break(doc)
+
+    # (끝) — 텍스트 영역(여백 안쪽) 기준 하단 중앙 고정
+    p_end = doc.add_paragraph()
+    p_end.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _set_font(p_end.add_run("(끝)"), size=12)
+    pPr = p_end._p.get_or_add_pPr()
+    frame = OxmlElement("w:framePr")
+    frame.set(qn("w:wrap"),    "notBeside")
+    frame.set(qn("w:vAnchor"), "margin")   # 텍스트 영역 기준 (여백 안쪽)
+    frame.set(qn("w:hAnchor"), "margin")
+    frame.set(qn("w:xAlign"),  "center")
+    frame.set(qn("w:yAlign"),  "bottom")
+    frame.set(qn("w:w"),       "9024")     # A4 텍스트 폭 ≈ 9024 twips
+    pPr.append(frame)
 
     doc.save(output_path)
     print(f"[file_writers] 시험지 저장: {output_path}")
@@ -554,100 +469,64 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
 def save_answer_key_docx(qa_pairs: list, output_path: str) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     doc = Document()
-    _set_margins(doc)
+    sec = doc.sections[0]
+    _set_margins(sec)
 
-    _add_exam_header(doc,
-                     "[학과명] | [과목명] — 모범답안 및 채점기준",
-                     "배포 금지",
-                     different_first=False)
-    _add_exam_footer(doc, "배포 금지")
+    hdr = sec.header
+    hdr.is_linked_to_previous = False
+    p_hdr = hdr.paragraphs[0] if hdr.paragraphs else hdr.add_paragraph()
+    p_hdr.clear()
+    p_hdr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    _set_font(p_hdr.add_run("모범답안 및 채점기준 — 배포 금지"), size=9)
+
+    ftr = sec.footer
+    ftr.is_linked_to_previous = False
+    if ftr.paragraphs:
+        ftr.paragraphs[0].clear()
 
     p_title = doc.add_paragraph()
     p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_title.paragraph_format.space_before = Pt(12)
-    p_title.paragraph_format.space_after = Pt(4)
-    _set_font(p_title.add_run("모범답안 및 채점기준"), size=20, bold=True, color=BLACK)
-
-    p_sub = doc.add_paragraph()
-    p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_sub.paragraph_format.space_after = Pt(8)
-    _set_font(p_sub.add_run("[과목명] [시험종류]"), size=11, color=MID)
-
-    add_horizontal_line(doc, color=BLACK, sz="14")
-    doc.add_paragraph()
+    p_title.paragraph_format.space_after  = Pt(16)
+    _set_font(p_title.add_run("모범답안 및 채점기준"), size=16, bold=True)
 
     for i, qa in enumerate(qa_pairs, start=1):
         q_type    = qa.get("type", "")
         q_type_ko = TYPE_KO.get(q_type, q_type)
         question  = qa.get("question", "")
-        answer    = qa.get("answer", "")
-        rubric    = qa.get("rubric", "")
-        note      = qa.get("note", "")
+        answer    = qa.get("answer",   "")
+        rubric    = qa.get("rubric",   "")
 
         p_num = doc.add_paragraph()
-        p_num.paragraph_format.space_before = Pt(14)
-        p_num.paragraph_format.space_after = Pt(4)
-        _set_font(p_num.add_run(f"Q{i}."), size=11, bold=True, color=BLACK)
-        _set_font(p_num.add_run(f"  ({q_type_ko})"), size=9, color=MID)
-        _set_font(p_num.add_run(f"  {question}"), size=10, color=DARK)
+        p_num.paragraph_format.space_before = Pt(16)
+        p_num.paragraph_format.space_after  = Pt(4)
+        _set_font(p_num.add_run(f"문제 {i}"), size=12, bold=True)
+        _set_font(p_num.add_run(f"  ({q_type_ko})"), size=11)
 
-        # ── 1. 모범답안 박스 (왼쪽 테두리만) ──────────────────
-        tbl_a = _make_table(doc, 1, 1, width_cm=_CONTENT_W, center=False)
-        c_a = tbl_a.cell(0, 0)
-        set_cell_shading(c_a, OFFWHITE)
-        set_cell_border(c_a, {
-            "left":   {"val": "single", "sz": "20", "color": DARK},
-            "top":    {"val": "nil",    "sz": "0",  "color": "auto"},
-            "right":  {"val": "nil",    "sz": "0",  "color": "auto"},
-            "bottom": {"val": "nil",    "sz": "0",  "color": "auto"},
-        })
-        _set_cell_margin(c_a, top=80, bottom=80, left=180, right=80)
-        _cp(c_a, "▷  모범답안", size=9, bold=True, color=DARK,
-            align=WD_ALIGN_PARAGRAPH.LEFT, sb=2, sa=4)
-        p_ans = c_a.add_paragraph()
-        p_ans.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p_q = doc.add_paragraph()
+        p_q.paragraph_format.space_after = Pt(4)
+        _set_font(p_q.add_run(question), size=11)
+
+        p_al = doc.add_paragraph()
+        p_al.paragraph_format.space_before = Pt(4)
+        p_al.paragraph_format.space_after  = Pt(2)
+        _set_font(p_al.add_run("▶ 모범답안"), size=11, bold=True)
+
+        p_ans = doc.add_paragraph()
         p_ans.paragraph_format.left_indent = Cm(0.5)
-        p_ans.paragraph_format.space_after = Pt(2)
-        _set_font(p_ans.add_run(answer), size=10, color=DARK)
+        p_ans.paragraph_format.space_after = Pt(4)
+        _set_font(p_ans.add_run(answer), size=11)
 
-        doc.add_paragraph()
+        if rubric:
+            p_rl = doc.add_paragraph()
+            p_rl.paragraph_format.space_before = Pt(4)
+            p_rl.paragraph_format.space_after  = Pt(2)
+            _set_font(p_rl.add_run("▶ 채점기준"), size=11, bold=True)
 
-        # ── 2. 채점기준 테이블 (배점 : 채점기준) ──
-        rub_w = [3.0, 13.0]
-        tbl_r = _make_table(doc, 2, 2, width_cm=_CONTENT_W, center=False)
-        _set_table_borders(tbl_r, sz="4", color=RULE)
-        for ri, row in enumerate(tbl_r.rows):
-            for ci, cell in enumerate(row.cells):
-                _set_cell_width(cell, rub_w[ci])
-                if ri == 0:
-                    set_cell_shading(cell, DARK)
-                    hdr_texts = ["배점", "채점기준"]
-                    _cp(cell, hdr_texts[ci], size=9, bold=True, color=WHITE,
-                        sb=3, sa=3)
-                else:
-                    set_cell_shading(cell, OFFWHITE)
-                    data = [qa.get("score", ""), rubric]
-                    align = (WD_ALIGN_PARAGRAPH.CENTER if ci == 0
-                             else WD_ALIGN_PARAGRAPH.LEFT)
-                    _cp(cell, str(data[ci]), size=9, color=DARK,
-                        align=align, sb=4, sa=4)
-
-        doc.add_paragraph()
-
-        # ── 3. 유의사항 박스 (있을 때만) ──────────────────────
-        if note:
-            tbl_n = _make_table(doc, 1, 1, width_cm=_CONTENT_W, center=False)
-            _set_table_borders(tbl_n, sz="4", color=RULE)
-            c_n = tbl_n.cell(0, 0)
-            set_cell_shading(c_n, OFFWHITE)
-            _set_cell_margin(c_n, top=80, bottom=80, left=120, right=80)
-            _cp(c_n, "※ 채점 시 유의사항", size=9, bold=True, color=DARK,
-                align=WD_ALIGN_PARAGRAPH.LEFT, sb=2, sa=2)
-            p_n = c_n.add_paragraph()
-            p_n.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            p_n.paragraph_format.space_after = Pt(2)
-            _set_font(p_n.add_run(note), size=9, color=DARK)
-            doc.add_paragraph()
+            p_rub = doc.add_paragraph()
+            p_rub.paragraph_format.left_indent = Cm(0.5)
+            p_rub.paragraph_format.space_after = Pt(6)
+            _set_font(p_rub.add_run(rubric), size=11)
 
     doc.save(output_path)
     print(f"[file_writers] 답안지 저장: {output_path}")
