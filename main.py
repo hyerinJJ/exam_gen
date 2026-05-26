@@ -285,7 +285,10 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
     ))
 
     _COUNT_KEYS = {"단답형", "에세이형", "응용형", "진위형", "난이도"}
-    _FORMAT_KEYS = {"시험제목", "시험종류", "담당교수", "레이아웃"}
+    _FORMAT_KEYS = {
+        "과목명", "영문명", "시험제목", "년도", "학기",
+        "시험종류", "시험일시", "제한시간", "총점", "담당교수", "레이아웃",
+    }
 
     count_parts = [f"단답형 {plan.get('단답형', 0)}개", f"에세이형 {plan.get('에세이형', 0)}개",
                    f"응용형 {plan.get('응용형', 0)}개", f"진위형 {plan.get('진위형', 0)}개",

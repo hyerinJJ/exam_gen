@@ -1,4 +1,5 @@
 import os
+import re
 from docx import Document
 from docx.shared import Pt, Cm, Mm
 from docx.oxml.ns import qn
@@ -11,6 +12,8 @@ _PAGE_BREAK_KEYWORDS = ("1개", "한 페이지", "페이지당 1", "하나당", 
 FONT_COVER = "HY견명조"
 FONT_BODY  = "HY신명조"
 _SPACING_BODY = -4  # twips ≈ 0.2pt narrower
+_TF_MARKER_RE = re.compile(r"\s*\(T/F\)\s*$", re.IGNORECASE)
+_SUBQUESTION_RE = re.compile(r"(?=\([0-9]+\)\s*)")
 
 # 출력 순서: tf → short → essay → application
 _TYPE_ORDER = ["tf", "short", "essay", "application"]
@@ -126,6 +129,58 @@ def _set_margins(section, cm: float = 2.54):
     section.page_height = Mm(297)
 
 
+def _first_plan_value(plan: dict, *keys: str):
+    for key in keys:
+        value = plan.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _split_course_names(raw: str) -> tuple[str | None, str | None]:
+    """'한글 - 과학적 관리, 영어 - Scientific Management' 같은 값을 분리."""
+    if not raw:
+        return None, None
+    text = str(raw)
+    korean = None
+    english = None
+
+    ko_match = re.search(r"한글\s*[-:]\s*([^,\n/]+)", text)
+    en_match = re.search(r"(?:영어|영문)\s*[-:]\s*([^,\n/]+)", text)
+    if ko_match:
+        korean = ko_match.group(1).strip()
+    if en_match:
+        english = en_match.group(1).strip()
+    return korean, english
+
+
+def _format_year_semester(year, semester) -> str | None:
+    parts = [str(v).strip() for v in (year, semester) if v not in (None, "")]
+    return " ".join(parts) if parts else None
+
+
+def _strip_tf_marker(text: str) -> str:
+    return _TF_MARKER_RE.sub("", text or "").strip()
+
+
+def _question_parts(text: str) -> list[str]:
+    """시나리오/지시문과 (1)(2)(3) 소문항을 별도 문단으로 나눈다."""
+    cleaned = re.sub(r"\n{2,}", "\n", text or "").strip()
+    if not cleaned:
+        return []
+    raw_parts = [p.strip() for p in _SUBQUESTION_RE.split(cleaned) if p.strip()]
+    return raw_parts or [cleaned]
+
+
+def _add_question_text(doc: Document, text: str):
+    parts = _question_parts(text)
+    for idx, part in enumerate(parts):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(0 if idx == 0 else 4)
+        p.paragraph_format.space_after = Pt(4)
+        _set_font(p.add_run(part), size=12)
+
+
 # ── 표지 ──────────────────────────────────────────────────────────────────────
 
 def _add_cover_page(doc: Document, fmt: dict):
@@ -163,7 +218,7 @@ def _add_cover_page(doc: Document, fmt: dict):
         p_eng.paragraph_format.space_after = Pt(6)
         _set_font(p_eng.add_run(english_name), size=22, font_name=FONT_COVER)
 
-    # 학기
+    # 년도/학기
     if semester:
         p_sem = doc.add_paragraph()
         p_sem.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -349,18 +404,31 @@ def _interpret_format(plan: dict) -> dict:
         }
     layout = str(plan.get("레이아웃") or "").lower()
     page_break = any(kw in layout for kw in _PAGE_BREAK_KEYWORDS)
+    raw_course = _first_plan_value(plan, "시험 치는 과목", "시험과목", "과목")
+    parsed_korean, parsed_english = _split_course_names(raw_course)
+    korean_name = _first_plan_value(
+        plan, "과목명", "한글과목명", "한글 과목명", "국문명", "국문 과목명",
+    ) or parsed_korean
+    english_name = _first_plan_value(
+        plan, "영문명", "영문과목명", "영문 과목명", "영어과목명", "영어 과목명",
+    ) or parsed_english
+    title = korean_name or plan.get("시험제목") or None
+    semester = _format_year_semester(
+        _first_plan_value(plan, "년도", "연도", "학년도"),
+        _first_plan_value(plan, "학기", "년도 / 학기", "연도 / 학기"),
+    )
     return {
-        "title":       plan.get("시험제목") or plan.get("과목명") or None,
+        "title":       title,
         "course_info": plan.get("시험종류") or None,
         "professor":   plan.get("담당교수") or None,
         "page_break_per_question": page_break,
         "school":      plan.get("학교") or None,
         "department":  plan.get("학과") or None,
-        "english_name": plan.get("영문명") or None,
+        "english_name": english_name,
         "exam_date":    plan.get("시험일시") or None,
         "time_limit":   plan.get("제한시간") or None,
         "total_score":  plan.get("총점") or None,
-        "semester":     plan.get("학기") or None,
+        "semester":     semester,
     }
 
 
@@ -406,6 +474,7 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
                 q_text = q.get("question", "")
 
                 if q_type == "tf":
+                    q_text = _strip_tf_marker(q_text)
                     p_q = doc.add_paragraph()
                     p_q.paragraph_format.space_before = Pt(4)
                     p_q.paragraph_format.space_after  = Pt(8)
@@ -427,14 +496,16 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
                     _set_font(p_ans.add_run("답: (                         )"), size=12)
 
         else:
-            # ── 에세이 / 응용형: 질문 텍스트를 헤더에 인라인 ────────
+            # ── 에세이 / 응용형: 문제 번호와 질문 문단 분리 ────────
             q_text = q_list[0].get("question", "")
 
             p_hdr = doc.add_paragraph()
             p_hdr.paragraph_format.space_before = Pt(16)
-            p_hdr.paragraph_format.space_after  = Pt(10)
+            p_hdr.paragraph_format.space_after  = Pt(6)
             _set_font(p_hdr.add_run(f"문제 {group_num}"), size=12, bold=True)
-            _set_font(p_hdr.add_run(f" ({group_points}점) {q_text}"), size=12)
+            _set_font(p_hdr.add_run(f" ({group_points}점)"), size=12)
+
+            _add_question_text(doc, q_text)
 
             p_ans_label = doc.add_paragraph()
             p_ans_label.paragraph_format.space_before = Pt(4)

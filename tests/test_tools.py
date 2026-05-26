@@ -172,6 +172,62 @@ def test_search_with_google_passes_query():
     assert "fn" in captured
 
 
+# ── file writer 포맷 해석 / 출력 정리 테스트 ─────────────────────────────────
+
+def test_interpret_format_parses_korean_english_course_and_year_semester():
+    from tools.file_writers import _interpret_format
+
+    fmt = _interpret_format({
+        "시험 치는 과목": "한글 - 과학적 관리, 영어 - Scientific Management",
+        "년도": "2026학년도",
+        "학기": "1학기",
+        "시험종류": "중간고사",
+    })
+
+    assert fmt["title"] == "과학적 관리"
+    assert fmt["english_name"] == "Scientific Management"
+    assert fmt["semester"] == "2026학년도 1학기"
+    assert fmt["course_info"] == "중간고사"
+
+
+def test_save_exam_docx_hides_tf_marker(tmp_path):
+    from docx import Document
+    from tools.file_writers import save_exam_docx
+
+    out = tmp_path / "exam.docx"
+    save_exam_docx(
+        [{"id": "Q1", "type": "tf", "question": "비지도학습은 레이블이 필요 없다. (T/F)", "answer": "T", "rubric": "기준"}],
+        str(out),
+        plan={"진위형": 1, "과목명": "과학적 관리"},
+    )
+
+    text = "\n".join(p.text for p in Document(out).paragraphs)
+    assert "(T/F)" not in text
+    assert "비지도학습은 레이블이 필요 없다." in text
+
+
+def test_save_exam_docx_splits_application_subquestions(tmp_path):
+    from docx import Document
+    from tools.file_writers import save_exam_docx
+
+    out = tmp_path / "exam.docx"
+    question = (
+        "편의점에 새로운 POS 시스템이 도입되었다.\n"
+        "(1) Work System Framework를 적용하여 문제를 분석하시오.\n"
+        "(2) 개선 방향을 제시하시오."
+    )
+    save_exam_docx(
+        [{"id": "Q1", "type": "application", "question": question, "answer": "답", "rubric": "기준"}],
+        str(out),
+        plan={"응용형": 1, "과목명": "과학적 관리"},
+    )
+
+    paragraphs = [p.text for p in Document(out).paragraphs]
+    assert any(p == "편의점에 새로운 POS 시스템이 도입되었다." for p in paragraphs)
+    assert any(p.startswith("(1) Work System Framework") for p in paragraphs)
+    assert any(p.startswith("(2) 개선 방향") for p in paragraphs)
+
+
 # ── 실제 파이프라인 통합 테스트 (ffmpeg로 테스트 영상 생성) ────────────────────
 
 def _make_silent_mp4(output_path: Path, duration: int = 2) -> bool:
