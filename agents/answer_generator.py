@@ -198,26 +198,36 @@ class AnswerGeneratorAgent(BaseAgentWorker):
         return {"answer": answer, "rubric": rubric}
 
     def _generate_application_answer(self, question: dict) -> dict:
-        en_keywords = self._extract_english_keywords(question["question"])
+        seed = question.get("grading_seed") or {}
+        has_seed = bool(
+            seed.get("target_framework")
+            or seed.get("scenario_mapping")
+            or seed.get("expected_reasoning")
+        )
 
-        arxiv_query = en_keywords
-        arxiv_results = get_cached(arxiv_query)
-        if arxiv_results is None:
-            try:
-                arxiv_results = search_arxiv(en_keywords, max_results=2)
-            except Exception:
-                arxiv_results = "(arXiv 검색 결과 없음)"
-            set_cached(arxiv_query, arxiv_results)
+        if has_seed:
+            search_results = ""
+        else:
+            en_keywords = self._extract_english_keywords(question["question"])
 
-        google_query = f"{question['question'][:80]} 해결 방법 사례"
-        google_results = get_cached(google_query)
-        if google_results is None:
-            google_results = search_with_google(google_query)
-            set_cached(google_query, google_results)
+            arxiv_query = en_keywords
+            arxiv_results = get_cached(arxiv_query)
+            if arxiv_results is None:
+                try:
+                    arxiv_results = search_arxiv(en_keywords, max_results=2)
+                except Exception:
+                    arxiv_results = "(arXiv 검색 결과 없음)"
+                set_cached(arxiv_query, arxiv_results)
 
-        search_results = f"[arXiv]\n{arxiv_results}\n\n[Google]\n{google_results}"
+            google_query = f"{question['question'][:80]} 해결 방법 사례"
+            google_results = get_cached(google_query)
+            if google_results is None:
+                google_results = search_with_google(google_query)
+                set_cached(google_query, google_results)
 
-        seed_ctx = _seed_context(question.get("grading_seed"))
+            search_results = f"[arXiv]\n{arxiv_results}\n\n[Google]\n{google_results}"
+
+        seed_ctx = _seed_context(seed)
         seed_block = f"출제 의도:\n{seed_ctx}\n\n" if seed_ctx else ""
 
         prompt = APPLICATION_PROMPT.format(

@@ -564,3 +564,74 @@ def test_grading_seed_absent_fallback():
     # grading_seed 없으면 모델 호출 2회 (답안 + 루브릭)
     assert mock_retry.call_count == 2
     assert result["answer"] == "답변"
+
+
+# ── application answer generator 검색 재호출 방지 테스트 ──────────────────────
+
+def test_application_answer_skips_search_when_seed_exists():
+    """grading_seed(target_framework/expected_reasoning)가 있으면 검색 호출 없이 답안을 생성해야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+
+    q = {
+        "id": "Q1", "type": "application",
+        "question": "Work System Framework를 적용하여 분석하시오.",
+        "grading_seed": {
+            "target_framework": "Work System Framework",
+            "expected_reasoning": "기술·인간·조직 세 축으로 분석",
+            "scenario_mapping": [],
+        },
+    }
+    with patch("agents.answer_generator.retry_call") as mock_retry, \
+         patch("agents.answer_generator.search_with_google") as mock_google, \
+         patch("agents.answer_generator.search_arxiv") as mock_arxiv:
+        mock_retry.return_value = MagicMock(text="모범답안")
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        agent._generate_application_answer(q)
+
+    mock_google.assert_not_called()
+    mock_arxiv.assert_not_called()
+
+
+def test_application_answer_uses_search_when_no_seed():
+    """grading_seed가 없으면 기존 fallback 검색 경로(arXiv + Google)를 사용해야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+
+    q = {"id": "Q1", "type": "application",
+         "question": "Work System Framework를 적용하여 분석하시오."}
+
+    with patch("agents.answer_generator.retry_call") as mock_retry, \
+         patch("agents.answer_generator.get_cached", return_value=None), \
+         patch("agents.answer_generator.set_cached"), \
+         patch("agents.answer_generator.search_arxiv", return_value="arXiv 결과") as mock_arxiv, \
+         patch("agents.answer_generator.search_with_google", return_value="Google 결과") as mock_google:
+        mock_retry.return_value = MagicMock(text="모범답안")
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        agent._generate_application_answer(q)
+
+    mock_arxiv.assert_called_once()
+    mock_google.assert_called_once()
+
+
+def test_application_answer_skips_search_with_only_scenario_mapping():
+    """scenario_mapping만 있고 target_framework/expected_reasoning 없으면 검색을 수행해야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+
+    q = {
+        "id": "Q1", "type": "application",
+        "question": "분석하시오.",
+        "grading_seed": {"scenario_mapping": []},  # 빈 리스트 — 의미 있는 seed 없음
+    }
+    with patch("agents.answer_generator.retry_call") as mock_retry, \
+         patch("agents.answer_generator.get_cached", return_value=None), \
+         patch("agents.answer_generator.set_cached"), \
+         patch("agents.answer_generator.search_arxiv", return_value="결과") as mock_arxiv, \
+         patch("agents.answer_generator.search_with_google", return_value="결과") as mock_google:
+        mock_retry.return_value = MagicMock(text="모범답안")
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        agent._generate_application_answer(q)
+
+    mock_arxiv.assert_called_once()
+    mock_google.assert_called_once()

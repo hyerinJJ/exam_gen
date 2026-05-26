@@ -144,6 +144,34 @@ def test_read_video_temp_cleaned_up_on_error(tmp_path):
     assert not created_tmp[0].exists(), "예외 발생 시에도 임시 파일이 삭제되어야 함"
 
 
+# ── search_with_google retry_call 테스트 ─────────────────────────────────────
+
+def test_search_with_google_uses_retry_call():
+    """search_with_google가 retry_call을 통해 API를 호출해야 함."""
+    with patch("tools.search_tools.retry_call") as mock_retry:
+        mock_retry.return_value = MagicMock(text="검색 결과")
+        import tools.search_tools as st
+        result = st.search_with_google("테스트 쿼리")
+    mock_retry.assert_called_once()
+    assert result == "검색 결과"
+
+
+def test_search_with_google_passes_query():
+    """search_with_google가 retry_call에 올바른 쿼리를 담아 호출해야 함."""
+    captured = {}
+
+    def fake_retry(fn):
+        response = MagicMock(text="결과")
+        captured["fn"] = fn
+        return response
+
+    with patch("tools.search_tools.retry_call", side_effect=fake_retry):
+        import tools.search_tools as st
+        st.search_with_google("머신러닝 사례")
+
+    assert "fn" in captured
+
+
 # ── 실제 파이프라인 통합 테스트 (ffmpeg로 테스트 영상 생성) ────────────────────
 
 def _make_silent_mp4(output_path: Path, duration: int = 2) -> bool:

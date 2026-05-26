@@ -1,6 +1,6 @@
 import arxiv
 from google.genai import types
-from tools.client import get_client
+from tools.client import get_client, retry_call
 
 FLASH_MODEL = "gemini-2.5-flash"
 
@@ -24,9 +24,9 @@ def search_arxiv(query: str, max_results: int = 3) -> str:
 def search_with_google(query: str) -> str:
     client = get_client()
     google_search_tool = types.Tool(google_search=types.GoogleSearch())
-    response = client.models.generate_content(
+    response = retry_call(lambda: client.models.generate_content(
         model=FLASH_MODEL,
         contents=query,
         config=types.GenerateContentConfig(tools=[google_search_tool]),
-    )
+    ))
     return response.text
