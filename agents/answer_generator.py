@@ -273,7 +273,7 @@ class AnswerGeneratorAgent(BaseAgentWorker):
         questions = json.loads(input_text)
         results_map: dict = {}
 
-        with ThreadPoolExecutor(max_workers=max(1, len(questions))) as executor:
+        with ThreadPoolExecutor(max_workers=min(3, max(1, len(questions)))) as executor:
             future_to_q = {executor.submit(self._generate_answer, q): q for q in questions}
             for future in as_completed(future_to_q):
                 q = future_to_q[future]
