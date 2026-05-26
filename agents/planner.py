@@ -121,18 +121,19 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
             "topic_meta": {k: v for k, v in topic.items() if k not in ("name", "source_file")},
         }
 
-    usage_counter: dict = {}
+    _counters: dict = {}  # per-qtype source_file usage counter
 
     def pick_balanced(pool: list, qtype: str) -> dict:
+        counter = _counters.setdefault(qtype, {})
         if len(pool) == 1:
             chosen = pool[0]
         else:
             def adjusted(t: dict) -> float:
                 sf = t.get("source_file", "unknown")
-                return _score_topic(t, qtype) - 0.05 * usage_counter.get(sf, 0)
+                return _score_topic(t, qtype) - 0.05 * counter.get(sf, 0)
             chosen = max(pool, key=adjusted)
         sf = chosen.get("source_file", "unknown")
-        usage_counter[sf] = usage_counter.get(sf, 0) + 1
+        counter[sf] = counter.get(sf, 0) + 1
         return chosen
 
     plan = []

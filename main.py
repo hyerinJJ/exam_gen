@@ -13,6 +13,7 @@ from agents.quality_reviewer import QualityReviewerAgent
 from agents.refiner import RefinerAgent
 from agents.assembler import AssemblerAgent
 from tools.quality_rules import run_quality_rules
+from tools.scoring import assign_points
 
 
 _FIXED_PLAN_KEYS = {"단답형", "에세이형", "응용형", "진위형", "난이도"}
@@ -306,7 +307,9 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
 
     print("\n=== [Step 3] 문제 병렬 생성 ===")
     questions = _generate_questions(topics, plan)
-    print(f"  생성된 문제 수: {len(questions)}")
+    questions = assign_points(questions, plan)
+    total_pts = sum(q["points"] for q in questions)
+    print(f"  생성된 문제 수: {len(questions)} | 총점: {total_pts}점")
 
     print("\n=== [Step 4] 모범답안 생성 ===")
     qa_pairs = _generate_answers(questions)

@@ -172,13 +172,20 @@ def _question_parts(text: str) -> list[str]:
     return raw_parts or [cleaned]
 
 
-def _add_question_text(doc: Document, text: str):
+def _add_question_text(doc: Document, text: str, subpoints: list = None):
+    """Render question text, optionally annotating each (N) subquestion with its points."""
     parts = _question_parts(text)
+    subq_idx = 0
     for idx, part in enumerate(parts):
         p = doc.add_paragraph()
         p.paragraph_format.space_before = Pt(0 if idx == 0 else 4)
         p.paragraph_format.space_after = Pt(4)
-        _set_font(p.add_run(part), size=12)
+        if subpoints and re.match(r"^\([0-9]+\)", part) and subq_idx < len(subpoints):
+            _set_font(p.add_run(part), size=12)
+            _set_font(p.add_run(f"  ({subpoints[subq_idx]}점)"), size=12)
+            subq_idx += 1
+        else:
+            _set_font(p.add_run(part), size=12)
 
 
 # ── 표지 ──────────────────────────────────────────────────────────────────────
@@ -446,16 +453,18 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
     _add_cover_page(doc, fmt)
     _add_body_section(doc)
 
-    n = len(questions)
-    points_per_q = round(100 / n) if n > 0 else 10
+    # Compute total score from questions for cover page override
+    computed_total = sum(q.get("points", 0) for q in questions) if questions else None
+    if computed_total:
+        fmt["total_score"] = computed_total
 
     grouped = _group_by_type(questions)
     total_groups = len(grouped)
 
     for group_idx, (q_type, q_list) in enumerate(grouped):
-        group_num   = group_idx + 1
-        is_last     = group_idx == total_groups - 1
-        group_points = points_per_q * len(q_list)
+        group_num    = group_idx + 1
+        is_last      = group_idx == total_groups - 1
+        group_points = sum(q.get("points", 2 if q_type == "tf" else 5) for q in q_list)
         type_display = _TYPE_DISPLAY.get(q_type, TYPE_KO.get(q_type, q_type))
         type_guide   = _TYPE_GUIDE.get(q_type, "")
 
@@ -497,13 +506,16 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
 
         else:
             # ── 에세이 / 응용형: 문제 번호와 질문 문단 분리 ────────
-            q_text = q_list[0].get("question", "")
+            q = q_list[0]
+            q_text    = q.get("question", "")
+            q_points  = q.get("points", 10)
+            subpoints = q.get("subpoints")
 
             p_hdr = doc.add_paragraph()
             p_hdr.paragraph_format.space_before = Pt(16)
             p_hdr.paragraph_format.space_after  = Pt(6)
             _set_font(p_hdr.add_run(f"문제 {group_num}"), size=12, bold=True)
-            _set_font(p_hdr.add_run(f" ({group_points}점)"), size=12)
+            _set_font(p_hdr.add_run(f" ({q_points}점)"), size=12)
 
             _add_question_text(doc, q_text)
 
@@ -568,11 +580,13 @@ def save_answer_key_docx(qa_pairs: list, output_path: str) -> None:
         answer    = qa.get("answer",   "")
         rubric    = qa.get("rubric",   "")
 
+        pts = qa.get("points")
+        pts_str = f" — {pts}점" if pts is not None else ""
         p_num = doc.add_paragraph()
         p_num.paragraph_format.space_before = Pt(16)
         p_num.paragraph_format.space_after  = Pt(4)
         _set_font(p_num.add_run(f"문제 {i}"), size=12, bold=True)
-        _set_font(p_num.add_run(f"  ({q_type_ko})"), size=11)
+        _set_font(p_num.add_run(f"  ({q_type_ko}){pts_str}"), size=11)
 
         p_q = doc.add_paragraph()
         p_q.paragraph_format.space_after = Pt(4)

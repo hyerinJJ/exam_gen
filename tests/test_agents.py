@@ -692,7 +692,7 @@ def test_short_answer_seed_rubric_includes_variants():
         result = agent._generate_short_answer(q)
     mock_retry.assert_not_called()
     assert result["answer"] == "테일러"
-    assert "정답(10점): 테일러" in result["rubric"]
+    assert "정답(5점): 테일러" in result["rubric"]
     assert "허용 답안" in result["rubric"]
     assert "Taylor" in result["rubric"]
     assert "오답(0점): 그 외" in result["rubric"]
@@ -710,7 +710,7 @@ def test_short_answer_seed_rubric_no_variants():
         result = agent._generate_short_answer(q)
     mock_retry.assert_not_called()
     assert result["answer"] == "정답값"
-    assert "정답(10점): 정답값" in result["rubric"]
+    assert "정답(5점): 정답값" in result["rubric"]
     assert "허용 답안" not in result["rubric"]
     assert "오답(0점): 그 외" in result["rubric"]
 
