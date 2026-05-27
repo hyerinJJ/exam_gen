@@ -193,10 +193,10 @@ def _apply_fixes(qa_pairs: list, issues: list, topics: list, plan: dict,
         issue_history[key] = count
 
         if count == 1:
-            _regenerate_qa(bad_id, iss, qa_pairs, idx, topics, plan, answer_gen)
-        elif count == 2:
-            print(f"    {bad_id} 동일 지적 2회 → targeted refine")
             _refine_qa(bad_id, iss, qa_pairs, idx, refiner, answer_gen)
+        elif count == 2:
+            print(f"    {bad_id} 동일 지적 2회 → 재생성")
+            _regenerate_qa(bad_id, iss, qa_pairs, idx, topics, plan, answer_gen)
         else:
             print(f"    [미해결] {bad_id}: {iss.get('reason', '')} (3회 반복 → 수정 포기)")
             unresolved.append(iss)

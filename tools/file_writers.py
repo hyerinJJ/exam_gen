@@ -1,7 +1,7 @@
 import os
 import re
 from docx import Document
-from docx.shared import Pt, Cm, Mm
+from docx.shared import Pt, Cm, Mm, RGBColor
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -12,6 +12,7 @@ _PAGE_BREAK_KEYWORDS = ("1개", "한 페이지", "페이지당 1", "하나당", 
 FONT_COVER = "HY견명조"
 FONT_BODY  = "HY신명조"
 _SPACING_BODY = -4  # twips ≈ 0.2pt narrower
+_ANSWER_RED = RGBColor(255, 0, 0)
 _TF_MARKER_RE = re.compile(r"\s*\(T/F\)\s*$", re.IGNORECASE)
 _SUBQUESTION_RE = re.compile(r"(?=\([0-9]+\)\s*)")
 
@@ -33,8 +34,8 @@ _TYPE_DISPLAY = {
 
 # 문제 헤더에 표시할 지시문
 _TYPE_GUIDE = {
-    "tf":          "(빈칸에 T 또는 F를 작성)",
-    "short":       "",
+    "tf":          "(빈칸에 T 또는 F를 작성, 각 2점)",
+    "short":       "(각 5점)",
     "essay":       "",
     "application": "",
 }
@@ -58,6 +59,49 @@ def _set_font(run, size: int, bold: bool = False, font_name: str = FONT_BODY,
         sp_el.set(qn("w:val"), str(_SPACING_BODY))
         rPr.append(sp_el)
 
+
+def _set_answer_font(run, size: int = 12, bold: bool = False, underline: bool = False):
+    _set_font(run, size=size, bold=bold, underline=underline)
+    run.font.color.rgb = _ANSWER_RED
+
+
+def _add_centered_answer(paragraph, answer: str, width: int, size: int = 12,
+                         bold: bool = False, underline: bool = False):
+    text = str(answer or "").strip()
+    pad = max(width - len(text), 0)
+    left = pad // 2
+    right = pad - left
+    if left:
+        _set_font(paragraph.add_run(" " * left), size=size, underline=underline)
+    ans_run = paragraph.add_run(text)
+    _set_answer_font(ans_run, size=size, bold=bold, underline=underline)
+    if right:
+        _set_font(paragraph.add_run(" " * right), size=size, underline=underline)
+
+
+def _add_tf_answer_blank(paragraph, answer: str, size: int = 12):
+    _add_centered_answer(paragraph, answer, width=7, size=size, bold=True, underline=True)
+
+
+def _add_short_answer_blank(paragraph, answer: str, size: int = 12):
+    _set_font(paragraph.add_run("답: ("), size=size)
+    _add_centered_answer(paragraph, answer, width=25, size=size, bold=False, underline=False)
+    _set_font(paragraph.add_run(")"), size=size)
+
+
+def _note_lines(notes) -> list[str]:
+    if not notes:
+        return []
+    if isinstance(notes, list):
+        raw_lines = [str(note).strip() for note in notes]
+    else:
+        raw_lines = [line.strip() for line in str(notes).splitlines()]
+    lines = []
+    for line in raw_lines:
+        if not line:
+            continue
+        lines.append(line if line.startswith("*") else f"* {line}")
+    return lines
 
 
 def _tf_blank_run(paragraph, size: int = 12):
@@ -295,6 +339,54 @@ def _add_cover_page(doc: Document, fmt: dict):
     _cover_info_line(doc, "서명:", size=16, font_name=FONT_COVER, space_after=0)
 
 
+def _add_answer_key_cover_page(doc: Document, fmt: dict):
+    """모범답안 양식 표지: 시험 정보 + '모범 답안'만 중앙 배치."""
+    title        = fmt.get("title")        or "시험지"
+    english_name = fmt.get("english_name") or ""
+    course_info  = fmt.get("course_info")  or ""
+    exam_date    = fmt.get("exam_date")    or ""
+    semester     = fmt.get("semester")     or ""
+
+    for _ in range(3):
+        doc.add_paragraph()
+
+    p_title = doc.add_paragraph()
+    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_title.paragraph_format.space_after = Pt(4)
+    _set_font(p_title.add_run(title), size=22, font_name=FONT_COVER)
+
+    if english_name:
+        p_eng = doc.add_paragraph()
+        p_eng.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_eng.paragraph_format.space_after = Pt(6)
+        _set_font(p_eng.add_run(english_name), size=22, font_name=FONT_COVER)
+
+    if semester:
+        p_sem = doc.add_paragraph()
+        p_sem.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_sem.paragraph_format.space_after = Pt(4)
+        _set_font(p_sem.add_run(semester), size=16, font_name=FONT_COVER)
+
+    if course_info:
+        p_ci = doc.add_paragraph()
+        p_ci.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_ci.paragraph_format.space_after = Pt(8)
+        _set_font(p_ci.add_run(course_info), size=16, font_name=FONT_COVER)
+
+    doc.add_paragraph()
+    if exam_date:
+        p_dt = doc.add_paragraph()
+        p_dt.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_dt.paragraph_format.space_after = Pt(8)
+        _set_font(p_dt.add_run(f"시험 일시: {exam_date}"), size=16, font_name=FONT_COVER)
+
+    doc.add_paragraph()
+    p_label = doc.add_paragraph()
+    p_label.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_label.paragraph_format.space_after = Pt(0)
+    _set_font(p_label.add_run("모범 답안"), size=16, font_name=FONT_COVER)
+
+
 # ── 섹션 설정 ─────────────────────────────────────────────────────────────────
 
 def _configure_cover_section(section):
@@ -517,7 +609,7 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
             _set_font(p_hdr.add_run(f"문제 {group_num}"), size=12, bold=True)
             _set_font(p_hdr.add_run(f" ({q_points}점)"), size=12)
 
-            _add_question_text(doc, q_text)
+            _add_question_text(doc, q_text, subpoints=subpoints)
 
             p_ans_label = doc.add_paragraph()
             p_ans_label.paragraph_format.space_before = Pt(4)
@@ -549,11 +641,15 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
     print(f"[file_writers] 시험지 저장: {output_path}")
 
 
-def save_answer_key_docx(qa_pairs: list, output_path: str) -> None:
+def save_answer_key_docx(qa_pairs: list, output_path: str, plan: dict = None) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    fmt = _interpret_format(plan or {})
+    has_cover = bool(plan)
+
     doc = Document()
     sec = doc.sections[0]
     _set_margins(sec)
+    sec.different_first_page_header_footer = has_cover
 
     hdr = sec.header
     hdr.is_linked_to_previous = False
@@ -561,57 +657,110 @@ def save_answer_key_docx(qa_pairs: list, output_path: str) -> None:
     p_hdr.clear()
     p_hdr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     _set_font(p_hdr.add_run("모범답안 및 채점기준 — 배포 금지"), size=9)
+    if has_cover:
+        first_hdr = sec.first_page_header
+        first_hdr.is_linked_to_previous = False
+        if first_hdr.paragraphs:
+            first_hdr.paragraphs[0].clear()
 
     ftr = sec.footer
     ftr.is_linked_to_previous = False
     if ftr.paragraphs:
         ftr.paragraphs[0].clear()
+    if has_cover:
+        first_ftr = sec.first_page_footer
+        first_ftr.is_linked_to_previous = False
+        if first_ftr.paragraphs:
+            first_ftr.paragraphs[0].clear()
 
-    p_title = doc.add_paragraph()
-    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_title.paragraph_format.space_before = Pt(12)
-    p_title.paragraph_format.space_after  = Pt(16)
-    _set_font(p_title.add_run("모범답안 및 채점기준"), size=16, bold=True)
+    if has_cover:
+        _add_answer_key_cover_page(doc, fmt)
+        _page_break(doc)
 
-    for i, qa in enumerate(qa_pairs, start=1):
-        q_type    = qa.get("type", "")
-        q_type_ko = TYPE_KO.get(q_type, q_type)
-        question  = qa.get("question", "")
-        answer    = qa.get("answer",   "")
-        rubric    = qa.get("rubric",   "")
+    if not has_cover:
+        p_title = doc.add_paragraph()
+        p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_title.paragraph_format.space_before = Pt(12)
+        p_title.paragraph_format.space_after  = Pt(16)
+        _set_font(p_title.add_run("모범답안 및 채점기준"), size=16, bold=True)
 
-        pts = qa.get("points")
-        pts_str = f" — {pts}점" if pts is not None else ""
+    grouped = _group_by_type(qa_pairs)
+
+    for group_idx, (q_type, q_list) in enumerate(grouped):
+        group_num    = group_idx + 1
+        group_points = sum(q.get("points", 2 if q_type == "tf" else 5) for q in q_list)
+        type_display = _TYPE_DISPLAY.get(q_type, TYPE_KO.get(q_type, q_type))
+        type_guide   = _TYPE_GUIDE.get(q_type, "")
+
         p_num = doc.add_paragraph()
         p_num.paragraph_format.space_before = Pt(16)
         p_num.paragraph_format.space_after  = Pt(4)
-        _set_font(p_num.add_run(f"문제 {i}"), size=12, bold=True)
-        _set_font(p_num.add_run(f"  ({q_type_ko}){pts_str}"), size=11)
+        _set_font(p_num.add_run(f"문제 {group_num}"), size=12, bold=True)
+        if q_type in ("tf", "short"):
+            suffix = f" ({group_points}점) {type_display}"
+            if type_guide:
+                suffix += f" {type_guide}"
+            _set_font(p_num.add_run(suffix), size=12)
+        else:
+            q_points = q_list[0].get("points", 10)
+            _set_font(p_num.add_run(f" ({q_points}점)"), size=12)
 
-        p_q = doc.add_paragraph()
-        p_q.paragraph_format.space_after = Pt(4)
-        _set_font(p_q.add_run(question), size=11)
+        if q_type == "tf":
+            for sub_num, qa in enumerate(q_list, start=1):
+                p_q = doc.add_paragraph()
+                p_q.paragraph_format.space_before = Pt(4)
+                p_q.paragraph_format.space_after = Pt(6)
+                _set_font(p_q.add_run(f"({sub_num}) "), size=12)
+                _add_tf_answer_blank(p_q, qa.get("answer", ""), size=12)
+                _set_font(p_q.add_run(" "), size=12)
+                _set_font(p_q.add_run(_strip_tf_marker(qa.get("question", ""))), size=12)
 
-        p_al = doc.add_paragraph()
-        p_al.paragraph_format.space_before = Pt(4)
-        p_al.paragraph_format.space_after  = Pt(2)
-        _set_font(p_al.add_run("▶ 모범답안"), size=11, bold=True)
+        elif q_type == "short":
+            for sub_num, qa in enumerate(q_list, start=1):
+                p_q = doc.add_paragraph()
+                p_q.paragraph_format.space_before = Pt(4)
+                p_q.paragraph_format.space_after = Pt(4)
+                _set_font(p_q.add_run(f"({sub_num}) "), size=12)
+                _set_font(p_q.add_run(qa.get("question", "")), size=12)
 
-        p_ans = doc.add_paragraph()
-        p_ans.paragraph_format.left_indent = Cm(0.5)
-        p_ans.paragraph_format.space_after = Pt(4)
-        _set_font(p_ans.add_run(answer), size=11)
+                p_ans = doc.add_paragraph()
+                p_ans.paragraph_format.left_indent = Cm(1.0)
+                p_ans.paragraph_format.space_after = Pt(8)
+                _add_short_answer_blank(p_ans, qa.get("answer", ""), size=12)
 
-        if rubric:
-            p_rl = doc.add_paragraph()
-            p_rl.paragraph_format.space_before = Pt(4)
-            p_rl.paragraph_format.space_after  = Pt(2)
-            _set_font(p_rl.add_run("▶ 채점기준"), size=11, bold=True)
+        else:
+            qa = q_list[0]
+            rubric = qa.get("rubric", "")
+            notes = _note_lines(qa.get("grading_notes") or qa.get("comments"))
 
-            p_rub = doc.add_paragraph()
-            p_rub.paragraph_format.left_indent = Cm(0.5)
-            p_rub.paragraph_format.space_after = Pt(6)
-            _set_font(p_rub.add_run(rubric), size=11)
+            _add_question_text(doc, qa.get("question", ""), subpoints=qa.get("subpoints"))
+
+            p_al = doc.add_paragraph()
+            p_al.paragraph_format.space_before = Pt(4)
+            p_al.paragraph_format.space_after  = Pt(2)
+            _set_font(p_al.add_run("모범답안:"), size=12, bold=True)
+
+            p_ans = doc.add_paragraph()
+            p_ans.paragraph_format.left_indent = Cm(0.5)
+            p_ans.paragraph_format.space_after = Pt(4)
+            _set_font(p_ans.add_run(qa.get("answer", "")), size=12)
+
+            if rubric:
+                p_rl = doc.add_paragraph()
+                p_rl.paragraph_format.space_before = Pt(4)
+                p_rl.paragraph_format.space_after  = Pt(2)
+                _set_font(p_rl.add_run("채점기준:"), size=12, bold=True)
+
+                p_rub = doc.add_paragraph()
+                p_rub.paragraph_format.left_indent = Cm(0.5)
+                p_rub.paragraph_format.space_after = Pt(4 if notes else 6)
+                _set_font(p_rub.add_run(rubric), size=12)
+
+            for note in notes:
+                p_note = doc.add_paragraph()
+                p_note.paragraph_format.left_indent = Cm(0.5)
+                p_note.paragraph_format.space_after = Pt(2)
+                _set_font(p_note.add_run(note), size=10, italic=True)
 
     doc.save(output_path)
     print(f"[file_writers] 답안지 저장: {output_path}")

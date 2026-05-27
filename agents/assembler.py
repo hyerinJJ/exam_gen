@@ -29,7 +29,7 @@ class AssemblerAgent(BaseAgentWorker):
                     input()
 
         _save_with_retry(save_exam_docx, qa_pairs, exam_path, plan=plan)
-        _save_with_retry(save_answer_key_docx, qa_pairs, answer_path)
+        _save_with_retry(save_answer_key_docx, qa_pairs, answer_path, plan=plan)
 
         result = {
             "exam": os.path.abspath(exam_path),

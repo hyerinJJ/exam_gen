@@ -264,6 +264,18 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
                     item["intended_answer"] = "F"
             plan.append(item)
 
+        # tf_traps의 answer 필드가 모두 F일 수 있으므로 T/F 비율 보정
+        tf_in_plan = [it for it in plan if it.get("question_type") == "tf"]
+        t_count = sum(1 for it in tf_in_plan if it.get("intended_answer") == "T")
+        if t_count < n_t:
+            for it in tf_in_plan:
+                if t_count >= n_t:
+                    break
+                if it.get("intended_answer") == "F" and it.get("tf_type") != "피로 함정":
+                    it["intended_answer"] = "T"
+                    it["tf_type"] = "반직관 정답"
+                    t_count += 1
+
     return plan
 
 

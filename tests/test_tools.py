@@ -251,6 +251,135 @@ def test_save_exam_docx_splits_application_subquestions(tmp_path):
     assert any(p.startswith("(2) 개선 방향") for p in paragraphs)
 
 
+def test_save_answer_key_embeds_tf_and_short_answers(tmp_path):
+    from docx import Document
+    from docx.shared import RGBColor
+    from tools.file_writers import save_answer_key_docx
+
+    out = tmp_path / "answer_key.docx"
+    save_answer_key_docx(
+        [
+            {"id": "Q1", "type": "tf", "question": "명제이다. (T/F)", "answer": "T", "rubric": "정답: T"},
+            {"id": "Q2", "type": "short", "question": "용어는?", "answer": "과적합", "rubric": "정답(5점): 과적합"},
+        ],
+        str(out),
+    )
+
+    doc = Document(out)
+    runs = [run for p in doc.paragraphs for run in p.runs]
+    tf_run = next(run for run in runs if run.text == "T")
+    short_run = next(run for run in runs if run.text == "과적합")
+
+    assert tf_run.font.bold is True
+    assert tf_run.font.underline is True
+    assert tf_run.font.color.rgb == RGBColor(255, 0, 0)
+    assert short_run.font.bold in (False, None)
+    assert short_run.font.color.rgb == RGBColor(255, 0, 0)
+
+
+def test_save_answer_key_essay_uses_answer_rubric_and_note_labels(tmp_path):
+    from docx import Document
+    from tools.file_writers import save_answer_key_docx
+
+    out = tmp_path / "answer_key.docx"
+    save_answer_key_docx(
+        [{
+            "id": "Q1",
+            "type": "essay",
+            "question": "설명하시오.",
+            "answer": "핵심 답안",
+            "rubric": "핵심 포인트 (10점)",
+            "grading_notes": "표현이 달라도 개념이 정확하면 인정",
+        }],
+        str(out),
+    )
+
+    text = "\n".join(p.text for p in Document(out).paragraphs)
+    assert "모범답안:" in text
+    assert "채점기준:" in text
+    assert "▶ 모범답안" not in text
+    assert "* 표현이 달라도 개념이 정확하면 인정" in text
+
+
+def test_save_answer_key_displays_essay_subpoints(tmp_path):
+    from docx import Document
+    from tools.file_writers import save_answer_key_docx
+
+    out = tmp_path / "answer_key.docx"
+    save_answer_key_docx(
+        [{
+            "id": "Q1",
+            "type": "essay",
+            "question": "배경 설명\n(1) 설명하시오.\n(2) 비교하시오.",
+            "answer": "핵심 답안",
+            "rubric": "(1) 기준 (15점)\n(2) 기준 (10점)",
+            "points": 25,
+            "subpoints": [15, 10],
+        }],
+        str(out),
+    )
+
+    paragraphs = [p.text for p in Document(out).paragraphs]
+    assert any(p.startswith("(1) 설명하시오.") and "(15점)" in p for p in paragraphs)
+    assert any(p.startswith("(2) 비교하시오.") and "(10점)" in p for p in paragraphs)
+
+
+def test_save_answer_key_with_plan_adds_template_cover(tmp_path):
+    from docx import Document
+    from tools.file_writers import save_answer_key_docx
+
+    out = tmp_path / "answer_key.docx"
+    save_answer_key_docx(
+        [{"id": "Q1", "type": "tf", "question": "명제이다. (T/F)", "answer": "T", "rubric": "정답: T"}],
+        str(out),
+        plan={
+            "시험 치는 과목": "한글 - 과학적 관리, 영어 - Scientific Management",
+            "년도": "2026학년도",
+            "학기": "1학기",
+            "시험종류": "기말고사",
+            "시험일시": "4월 14일 9시 30분 ~ 10시 45분",
+        },
+    )
+
+    paragraphs = [p.text for p in Document(out).paragraphs]
+    assert paragraphs[3] == "과학적 관리"
+    assert "Scientific Management" in paragraphs
+    assert "2026학년도 1학기" in paragraphs
+    assert "기말고사" in paragraphs
+    assert "시험 일시: 4월 14일 9시 30분 ~ 10시 45분" in paragraphs
+    assert "모범 답안" in paragraphs
+    assert "모범답안 및 채점기준" not in paragraphs[:15]
+
+
+def test_save_answer_key_uses_exam_grouping_and_order(tmp_path):
+    from docx import Document
+    from tools.file_writers import save_answer_key_docx
+
+    out = tmp_path / "answer_key.docx"
+    save_answer_key_docx(
+        [
+            {"id": "E1", "type": "essay", "question": "서술하시오.", "answer": "서술 답", "rubric": "서술 기준", "points": 10},
+            {"id": "T1", "type": "tf", "question": "첫 명제이다. (T/F)", "answer": "T", "rubric": "정답: T", "points": 2},
+            {"id": "S1", "type": "short", "question": "용어는?", "answer": "과적합", "rubric": "정답(5점): 과적합", "points": 5},
+            {"id": "T2", "type": "tf", "question": "둘째 명제이다. (T/F)", "answer": "F", "rubric": "정답: F", "points": 2},
+            {"id": "A1", "type": "application", "question": "상황\n(1) 분석하시오.", "answer": "응용 답", "rubric": "응용 기준", "points": 10, "subpoints": [10]},
+        ],
+        str(out),
+    )
+
+    paragraphs = [p.text for p in Document(out).paragraphs]
+    problem_headers = [p for p in paragraphs if p.startswith("문제 ")]
+
+    assert problem_headers == [
+        "문제 1 (4점) True/False (빈칸에 T 또는 F를 작성, 각 2점)",
+        "문제 2 (5점) 단답형 (각 5점)",
+        "문제 3 (10점)",
+        "문제 4 (10점)",
+    ]
+    assert any(p.startswith("(1)") and "첫 명제이다." in p for p in paragraphs)
+    assert any(p.startswith("(2)") and "둘째 명제이다." in p for p in paragraphs)
+
+
 # ── 실제 파이프라인 통합 테스트 (ffmpeg로 테스트 영상 생성) ────────────────────
 
 def _make_silent_mp4(output_path: Path, duration: int = 2) -> bool:

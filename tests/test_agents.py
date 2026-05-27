@@ -812,6 +812,53 @@ def test_short_answer_no_seed_calls_gemini():
     assert result["answer"] == "Python"
 
 
+def test_essay_answer_generates_grading_notes():
+    """Essay AnswerGenerator가 모범답안/채점기준 외에 채점 코멘트를 생성해야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    q = {"id": "Q1", "type": "essay", "question": "과학적 관리법을 설명하시오."}
+    with patch("agents.answer_generator.retry_call") as mock_retry:
+        mock_retry.side_effect = [
+            MagicMock(text="모범답안"),
+            MagicMock(text="채점기준"),
+            MagicMock(text="* 동의어 표현은 인정"),
+        ]
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        result = agent._generate_essay_answer(q)
+
+    assert mock_retry.call_count == 3
+    assert result["answer"] == "모범답안"
+    assert result["rubric"] == "채점기준"
+    assert result["grading_notes"] == "* 동의어 표현은 인정"
+
+
+def test_essay_rubric_prompt_uses_subpoints():
+    """소문항 배점이 있으면 rubric 프롬프트가 총점 임의배분 대신 소문항별 배점을 따라야 함."""
+    from agents.answer_generator import AnswerGeneratorAgent
+    q = {
+        "id": "Q1",
+        "type": "essay",
+        "question": "(1) 설명하시오.\n(2) 비교하시오.",
+        "points": 25,
+        "subpoints": [15, 10],
+    }
+    captured = {}
+
+    def fake_retry(fn):
+        fn()
+        captured["prompt"] = agent._client.models.generate_content.call_args.kwargs["contents"]
+        return MagicMock(text="채점기준")
+
+    with patch("agents.answer_generator.retry_call", side_effect=fake_retry):
+        agent = AnswerGeneratorAgent.__new__(AnswerGeneratorAgent)
+        agent._client = MagicMock()
+        agent._generate_rubric(q, "모범답안")
+
+    assert "총점 25점. 반드시 소문항별로 나누어" in captured["prompt"]
+    assert "(1) (15점):" in captured["prompt"]
+    assert "(2) (10점):" in captured["prompt"]
+
+
 # ── application answer generator 검색 재호출 방지 테스트 ──────────────────────
 
 def test_application_answer_skips_search_when_seed_exists():
