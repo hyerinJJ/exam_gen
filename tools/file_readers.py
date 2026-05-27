@@ -4,7 +4,10 @@ from pathlib import Path
 def read_pdf(path: Path) -> str:
     from pypdf import PdfReader
     reader = PdfReader(str(path))
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
+    pages = []
+    for i, page in enumerate(reader.pages, start=1):
+        pages.append(f"[페이지 {i}]\n{page.extract_text() or ''}")
+    return "\n\n".join(pages)
 
 
 def read_pptx(path: Path) -> str:

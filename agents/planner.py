@@ -40,9 +40,9 @@ _KEY_FRAGMENTS = {
 
 # knowledge_type 유형별 친화도 (문제 유형 → 적합한 knowledge_type 집합)
 _TYPE_AFFINITY = {
-    "short_answer": {"term", "number"},
-    "tf": {"term", "number", "comparison", "causal", "procedure"},
-    "essay": {"comparison", "causal", "framework"},
+    "short_answer": {"term"},
+    "tf": {"term", "comparison", "causal", "procedure"},
+    "essay": {"number", "comparison", "causal", "framework"},
     "application": {"framework", "case", "procedure"},
 }
 
@@ -93,6 +93,15 @@ def _score_topic(topic: dict, qtype: str) -> float:
     return base + boost
 
 
+def _bump(counter: dict, key: str) -> None:
+    key = key or "unknown"
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _usage(counter: dict, key: str) -> int:
+    return counter.get(key or "unknown", 0)
+
+
 def _build_plan_items(topics: list, key_concepts: list, counts: dict,
                       tf_traps: list = None) -> list:
     """메타데이터 기반 라우팅으로 question_plan 항목 리스트를 생성."""
@@ -121,29 +130,90 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
             "topic_meta": {k: v for k, v in topic.items() if k not in ("name", "source_file")},
         }
 
-    _counters: dict = {}  # per-qtype source_file usage counter
+    global_usage = {
+        "topic_name": {},
+        "concept_group": {},
+        "source_topic": {},
+        "knowledge_type": {},
+        "source_file": {},
+    }
+    per_type_source_usage: dict = {}
 
     def pick_balanced(pool: list, qtype: str) -> dict:
-        counter = _counters.setdefault(qtype, {})
+        type_counter = per_type_source_usage.setdefault(qtype, {})
         if len(pool) == 1:
             chosen = pool[0]
         else:
             def adjusted(t: dict) -> float:
+                topic_name = t.get("name", "unknown")
+                concept_group = t.get("concept_group", "unknown")
+                source_topic = t.get("source_topic", concept_group)
+                knowledge_type = t.get("knowledge_type", "term")
                 sf = t.get("source_file", "unknown")
-                return _score_topic(t, qtype) - 0.05 * counter.get(sf, 0)
+                penalty = (
+                    0.25 * _usage(global_usage["topic_name"], topic_name)
+                    + 0.12 * _usage(global_usage["concept_group"], concept_group)
+                    + 0.12 * _usage(global_usage["source_topic"], source_topic)
+                    + 0.04 * _usage(global_usage["knowledge_type"], knowledge_type)
+                    + 0.05 * _usage(global_usage["source_file"], sf)
+                    + 0.03 * _usage(type_counter, sf)
+                )
+                return _score_topic(t, qtype) - penalty
             chosen = max(pool, key=adjusted)
-        sf = chosen.get("source_file", "unknown")
-        counter[sf] = counter.get(sf, 0) + 1
+        _bump(global_usage["topic_name"], chosen.get("name", "unknown"))
+        _bump(global_usage["concept_group"], chosen.get("concept_group", "unknown"))
+        _bump(global_usage["source_topic"], chosen.get("source_topic", chosen.get("concept_group", "unknown")))
+        _bump(global_usage["knowledge_type"], chosen.get("knowledge_type", "term"))
+        _bump(global_usage["source_file"], chosen.get("source_file", "unknown"))
+        _bump(type_counter, chosen.get("source_file", "unknown"))
+        return chosen
+
+    concept_usage = {
+        "concept_group": {},
+        "source_topic": {},
+        "source_file": {},
+        "type": {},
+    }
+
+    def pick_key_concept(candidates: list) -> dict | None:
+        if not candidates:
+            return None
+
+        def score(kc: dict) -> float:
+            imp = kc.get("importance", "medium")
+            base = {"high": 1.0, "medium": 0.65, "low": 0.35}.get(imp, 0.65)
+            concept_group = kc.get("concept_group", "unknown")
+            source_topic = kc.get("source_topic", "unknown")
+            source_file = kc.get("source_file", "unknown")
+            ctype = kc.get("type", "term")
+            penalty = (
+                0.12 * _usage(concept_usage["concept_group"], concept_group)
+                + 0.10 * _usage(concept_usage["source_topic"], source_topic)
+                + 0.06 * _usage(concept_usage["source_file"], source_file)
+                + 0.05 * _usage(concept_usage["type"], ctype)
+                + 0.08 * _usage(global_usage["concept_group"], concept_group)
+            )
+            return base - penalty
+
+        chosen = max(candidates, key=score)
+        _bump(concept_usage["concept_group"], chosen.get("concept_group", "unknown"))
+        _bump(concept_usage["source_topic"], chosen.get("source_topic", "unknown"))
+        _bump(concept_usage["source_file"], chosen.get("source_file", "unknown"))
+        _bump(concept_usage["type"], chosen.get("type", "term"))
+        _bump(global_usage["concept_group"], chosen.get("concept_group", "unknown"))
+        _bump(global_usage["source_topic"], chosen.get("source_topic", "unknown"))
+        _bump(global_usage["source_file"], chosen.get("source_file", "unknown"))
+        _bump(global_usage["knowledge_type"], chosen.get("type", "term"))
         return chosen
 
     plan = []
 
     # 단답형: key_concept을 target으로, topic을 맥락으로 사용
     short_pool = sorted_pool("short_answer")
-    kc_sorted = sorted(key_concepts, key=lambda kc: 0 if kc.get("importance") == "high" else 1)
     for i in range(n_short):
         t = pick_balanced(short_pool, "short_answer")
-        target = kc_sorted[i % len(kc_sorted)]["term"] if kc_sorted else t.get("name", "")
+        kc = pick_key_concept(key_concepts)
+        target = kc["term"] if kc else t.get("name", "")
         plan.append(make_item("short_answer", t, target))
 
     # 서술형: 점수 높은 토픽 순으로 배치
@@ -209,12 +279,14 @@ def _parse_input(input_text: str):
             if topics and isinstance(topics[0], str):
                 topics = [
                     {"name": t, "importance": "supporting", "difficulty": "medium",
-                     "knowledge_type": "term", "exam_use": [], "reason": ""}
+                     "knowledge_type": "term", "exam_use": [], "source_file": "unknown",
+                     "concept_group": "unknown", "reason": ""}
                     for t in topics
                 ]
             if key_concepts and isinstance(key_concepts[0], str):
                 key_concepts = [
-                    {"term": kc, "type": "term", "importance": "medium", "difficulty": "medium"}
+                    {"term": kc, "type": "term", "importance": "medium", "difficulty": "medium",
+                     "source_topic": "unknown", "source_file": "unknown", "concept_group": "unknown"}
                     for kc in key_concepts
                 ]
             # tf_traps: new field first, then backward compat from old fields

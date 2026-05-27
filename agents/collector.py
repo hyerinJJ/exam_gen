@@ -16,5 +16,5 @@ class CollectorAgent(BaseAgentWorker):
                 filename = Path(path).name
                 sections.append(f"=== {filename} ===\n{content}")
             except Exception as e:
-                print(f"[{self.name}] 건너뜀: {path} — {e}")
+                print(f"[{self.name}] 건너뜀: {path} - {e}")
         return "\n\n".join(sections)

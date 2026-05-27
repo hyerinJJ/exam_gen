@@ -19,6 +19,29 @@ def test_read_file_routes_pdf(tmp_path):
     assert result == "pdf text"
 
 
+def test_read_pdf_includes_page_markers():
+    from tools.file_readers import read_pdf
+
+    class FakePage:
+        def __init__(self, text):
+            self._text = text
+
+        def extract_text(self):
+            return self._text
+
+    class FakeReader:
+        def __init__(self, _path):
+            self.pages = [FakePage("첫 페이지"), FakePage("둘째 페이지")]
+
+    with patch("pypdf.PdfReader", FakeReader):
+        result = read_pdf(Path("fake.pdf"))
+
+    assert "[페이지 1]" in result
+    assert "[페이지 2]" in result
+    assert "첫 페이지" in result
+    assert "둘째 페이지" in result
+
+
 def test_read_file_routes_pptx(tmp_path):
     f = tmp_path / "test.pptx"
     f.write_bytes(b"PK")  # zip stub

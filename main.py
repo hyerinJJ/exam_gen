@@ -216,6 +216,7 @@ def _run_quality_step(qa_pairs: list, plan: dict, topics: list) -> tuple:
         for iss in rule_result["issues"]:
             print(f"    {iss['id']}: {iss['reason']}")
         qa_pairs = _apply_fixes(qa_pairs, rule_result["issues"], topics, plan, issue_history, unresolved)
+        assign_points(qa_pairs)
     else:
         print("  [rule] 규칙 검사 통과.")
 
@@ -234,6 +235,7 @@ def _run_quality_step(qa_pairs: list, plan: dict, topics: list) -> tuple:
     for iss in ai_issues1:
         print(f"    {iss['id']}: {iss.get('reason', '')}")
     qa_pairs = _apply_fixes(qa_pairs, ai_issues1, topics, plan, issue_history, unresolved)
+    assign_points(qa_pairs)
 
     # ─ AI reviewer 2차 (수정 문항만) ────────────────────────────────────────
     fixed_pairs = [q for q in qa_pairs if q["id"] in fixed_ids]
@@ -255,7 +257,7 @@ def _run_quality_step(qa_pairs: list, plan: dict, topics: list) -> tuple:
         print("  AI reviewer 2차 통과.")
     else:
         ai_issues2 = review2.get("issues", [])
-        print(f"  [2차] 남은 문제 {len(ai_issues2)}개 — 추가 AI 검토 없이 기록")
+        print(f"  [2차] 남은 문제 {len(ai_issues2)}개 - 추가 AI 검토 없이 기록")
         for iss in ai_issues2:
             print(f"    [미해결] {iss['id']}: {iss.get('reason', '')}")
             unresolved.append(iss)
@@ -317,7 +319,7 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
     print("\n=== [Step 5] 품질 검토 ===")
     qa_pairs, unresolved = _run_quality_step(qa_pairs, plan, topics)
     if unresolved:
-        print(f"\n  ⚠ 미해결 품질 문제 {len(unresolved)}개:")
+        print(f"\n  [!] 미해결 품질 문제 {len(unresolved)}개:")
         for iss in unresolved:
             print(f"    {iss['id']}: {iss.get('reason', '')}")
 

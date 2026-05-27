@@ -145,6 +145,34 @@ def test_topic_source_file_preserved():
     assert result["topics"][0]["source_file"] == "lecture1.pdf"
 
 
+def test_topic_concept_group_defaults_to_unknown():
+    """topics에 concept_group이 없으면 'unknown'으로 채워져야 함."""
+    output = {
+        "topics": [{"name": "테스트", "importance": "core", "difficulty": "medium",
+                    "knowledge_type": "term", "exam_use": [], "reason": ""}],
+        "key_concepts": [],
+        "tf_traps": [],
+    }
+    result = _run_extractor(output)
+    assert result["topics"][0]["concept_group"] == "unknown"
+
+
+def test_key_concept_source_metadata_defaults_to_unknown():
+    """key_concepts에 source metadata가 없으면 기본값을 채워야 함."""
+    output = {
+        "topics": [{"name": "테스트", "importance": "core", "difficulty": "medium",
+                    "knowledge_type": "term", "exam_use": [], "reason": ""}],
+        "key_concepts": [{"term": "핵심 용어", "type": "term",
+                          "importance": "high", "difficulty": "medium"}],
+        "tf_traps": [],
+    }
+    result = _run_extractor(output)
+    concept = result["key_concepts"][0]
+    assert concept["source_topic"] == "unknown"
+    assert concept["source_file"] == "unknown"
+    assert concept["concept_group"] == "unknown"
+
+
 def test_plan_source_file_balanced_equal_score():
     """동일 점수 topic 사이에서 pick_balanced가 source_file을 분산시켜야 함."""
     from agents.planner import _build_plan_items
@@ -160,6 +188,23 @@ def test_plan_source_file_balanced_equal_score():
     plan = _build_plan_items(topics, [], counts)
     # 1st pick: A1 (all tied, stable order). file_a counter=1.
     # 2nd pick: B1 wins (file_b penalty=0 vs file_a penalty=0.05).
+    topic_names = [item["topic_name"] for item in plan]
+    assert "B1" in topic_names
+
+
+def test_plan_concept_group_balanced_equal_score():
+    """동일 점수 topic 사이에서 concept_group 반복이 감점되어야 함."""
+    from agents.planner import _build_plan_items
+    base = {"importance": "supporting", "difficulty": "medium",
+            "knowledge_type": "comparison", "exam_use": ["essay"], "reason": "",
+            "source_file": "same.pdf"}
+    topics = [
+        {**base, "name": "A1", "concept_group": "group_a"},
+        {**base, "name": "A2", "concept_group": "group_a"},
+        {**base, "name": "B1", "concept_group": "group_b"},
+    ]
+    counts = {"단답형": 0, "에세이형": 2, "응용형": 0, "난이도": "mixed"}
+    plan = _build_plan_items(topics, [], counts)
     topic_names = [item["topic_name"] for item in plan]
     assert "B1" in topic_names
 
@@ -200,7 +245,7 @@ def test_backward_compat_old_fields_to_knowledge_type():
     old_output = {
         "topics": [
             {
-                "name": "수치 개념",
+                "name": "수식 개념",
                 "importance": "medium",
                 "scope": "core",
                 "specificity": "numerical",
@@ -242,11 +287,11 @@ def test_backward_compat_old_tf_fields_to_tf_traps():
 # ── Planner 라우팅 테스트 ─────────────────────────────────────────────────────
 
 _NUMERICAL_TOPIC = {
-    "name": "수치 개념",
+    "name": "수식 개념",
     "importance": "supporting", "difficulty": "medium",
     "knowledge_type": "number",
-    "exam_use": ["short", "tf"],
-    "reason": "수치 암기",
+    "exam_use": ["essay"],
+    "reason": "수식 구조 이해",
 }
 _CAUSAL_TOPIC = {
     "name": "인과 개념",
@@ -278,10 +323,18 @@ _LOW_IMPORTANCE_TOPIC = {
 }
 
 
-def test_score_numerical_higher_for_short_answer():
-    """number 지식유형 토픽은 short_answer 점수가 causal보다 높아야 함."""
+def test_score_number_not_prioritized_for_short_answer():
+    """number 지식유형은 수치 암기 단답형으로 우선 배치하지 않아야 함."""
     from agents.planner import _score_topic
-    assert _score_topic(_NUMERICAL_TOPIC, "short_answer") > _score_topic(_CAUSAL_TOPIC, "short_answer")
+    term_topic = {**_LOW_IMPORTANCE_TOPIC, "importance": "supporting", "exam_use": ["short"]}
+    assert _score_topic(term_topic, "short_answer") > _score_topic(_NUMERICAL_TOPIC, "short_answer")
+
+
+def test_score_number_higher_for_essay():
+    """number 지식유형은 수식·계산 구조를 다루는 서술형에 더 적합해야 함."""
+    from agents.planner import _score_topic
+    term_topic = {**_LOW_IMPORTANCE_TOPIC, "importance": "supporting", "exam_use": ["short"]}
+    assert _score_topic(_NUMERICAL_TOPIC, "essay") > _score_topic(term_topic, "essay")
 
 
 def test_score_causal_higher_for_essay():
@@ -307,17 +360,18 @@ def test_plan_includes_core_high_topic():
     assert "핵심 개념 A" in topic_names
 
 
-def test_plan_picks_numerical_for_short_answer():
-    """short_answer 슬롯은 number 지식유형 토픽이 우선 선택되어야 함 (같은 중요도 티어 내)."""
+def test_plan_picks_term_for_short_answer_over_number():
+    """short_answer 슬롯은 수식/계산형 number보다 용어형 term을 우선해야 함."""
     from agents.planner import _build_plan_items
-    numerical = {**_NUMERICAL_TOPIC, "importance": "supporting"}
+    numerical = {**_NUMERICAL_TOPIC, "importance": "supporting", "exam_use": ["essay"]}
     causal = {**_CAUSAL_TOPIC, "importance": "supporting"}
-    topics = [causal, numerical]  # causal을 앞에 넣어 순서 의존성 제거
+    term_topic = {**_LOW_IMPORTANCE_TOPIC, "importance": "supporting", "exam_use": ["short"]}
+    topics = [causal, numerical, term_topic]  # 비단답형을 앞에 넣어 순서 의존성 제거
     counts = {"단답형": 1, "에세이형": 0, "응용형": 0, "난이도": "mixed"}
     plan = _build_plan_items(topics, [], counts)
     assert len(plan) == 1
     assert plan[0]["question_type"] == "short_answer"
-    assert plan[0]["topic_name"] == "수치 개념"
+    assert plan[0]["topic_name"] == "세부 개념 B"
 
 
 def test_plan_picks_causal_for_essay():
@@ -346,10 +400,38 @@ def test_plan_uses_key_concepts_for_short_target():
     """단답형 plan_item의 target_concept은 key_concept에서 가져와야 함."""
     from agents.planner import _build_plan_items
     topics = [_NUMERICAL_TOPIC]
-    key_concepts = [{"term": "특정 수치", "type": "number", "importance": "high", "difficulty": "medium"}]
+    key_concepts = [{"term": "핵심 용어", "type": "term", "importance": "high", "difficulty": "medium"}]
     counts = {"단답형": 1, "에세이형": 0, "응용형": 0, "난이도": "mixed"}
     plan = _build_plan_items(topics, key_concepts, counts)
-    assert plan[0]["target_concept"] == "특정 수치"
+    assert plan[0]["target_concept"] == "핵심 용어"
+
+
+def test_short_targets_use_key_concept_diversity():
+    """단답형 target_concept가 같은 concept_group에만 몰리지 않아야 함."""
+    from agents.planner import _build_plan_items
+    topics = [{**_NUMERICAL_TOPIC, "concept_group": "topic_group", "source_file": "file.pdf"}]
+    key_concepts = [
+        {"term": "A1", "type": "term", "importance": "high", "difficulty": "medium",
+         "source_topic": "T1", "source_file": "f1.pdf", "concept_group": "group_a"},
+        {"term": "A2", "type": "term", "importance": "high", "difficulty": "medium",
+         "source_topic": "T1", "source_file": "f1.pdf", "concept_group": "group_a"},
+        {"term": "B1", "type": "number", "importance": "high", "difficulty": "medium",
+         "source_topic": "T2", "source_file": "f2.pdf", "concept_group": "group_b"},
+    ]
+    counts = {"단답형": 2, "에세이형": 0, "응용형": 0, "난이도": "mixed"}
+    plan = _build_plan_items(topics, key_concepts, counts)
+    targets = [item["target_concept"] for item in plan]
+    assert "B1" in targets
+
+
+def test_core_topic_survives_diversity_penalty():
+    """diversity penalty가 core topic을 완전히 배제하면 안 됨."""
+    from agents.planner import _build_plan_items
+    core = {**_CORE_HIGH_TOPIC, "concept_group": "core_group", "source_file": "a.pdf"}
+    detail = {**_LOW_IMPORTANCE_TOPIC, "concept_group": "detail_group", "source_file": "b.pdf"}
+    counts = {"단답형": 0, "에세이형": 1, "응용형": 0, "난이도": "mixed"}
+    plan = _build_plan_items([detail, core], [], counts)
+    assert plan[0]["topic_name"] == "핵심 개념 A"
 
 
 # ── Generator 메타데이터 프롬프트 테스트 ──────────────────────────────────────
@@ -360,11 +442,11 @@ _SAMPLE_PLAN_ITEMS = [
         "topic_name": "경사하강법",
         "target_concept": "학습률",
         "difficulty": "medium",
-        "reason": "핵심 수치 이해",
+        "reason": "핵심 용어 이해",
         "topic_meta": {
             "importance": "core",
             "difficulty": "medium",
-            "knowledge_type": "number",
+            "knowledge_type": "term",
             "exam_use": ["short", "tf"],
         },
     }
@@ -386,8 +468,10 @@ def test_short_generator_prompt_contains_metadata():
     prompt_text = _captured_prompt(ShortAnswerGenerator, _SAMPLE_PLAN_ITEMS, "agents.generators")
     assert "경사하강법" in prompt_text
     assert "학습률" in prompt_text
-    # knowledge_type 정보가 프롬프트에 포함되어야 함
-    assert "number" in prompt_text
+    # knowledge_type 정보와 단답형 수치 암기 금지 기준이 프롬프트에 포함되어야 함
+    assert "term" in prompt_text
+    assert "수치값 암기 문제는 단답형으로 출제하지 마세요" in prompt_text
+    assert "같은 개념군" in prompt_text
 
 
 def test_essay_generator_prompt_contains_metadata():

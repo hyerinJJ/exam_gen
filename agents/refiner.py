@@ -83,7 +83,7 @@ class RefinerAgent(BaseAgentWorker):
             refined = self._refine(current, feedback)
             score = self._self_evaluate(refined, feedback)
 
-            print(f"[Refiner] 시도 {attempt}/{MAX_ATTEMPTS} — 자기평가 점수: {score}/5")
+            print(f"[Refiner] 시도 {attempt}/{MAX_ATTEMPTS} - 자기평가 점수: {score}/5")
 
             if score >= 4:
                 return json.dumps(refined, ensure_ascii=False, indent=2)

@@ -11,11 +11,12 @@ def get_claude_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
-def claude_generate_text(prompt: str, model: str = DEFAULT_MODEL) -> str:
+def claude_generate_text(prompt: str, model: str = DEFAULT_MODEL,
+                          max_tokens: int = 8192) -> str:
     client = get_claude_client()
     response = client.messages.create(
         model=model,
-        max_tokens=8192,
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text

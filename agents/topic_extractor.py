@@ -11,6 +11,7 @@ _TF_TRAP_TYPES = {"misconception", "concept_swap", "counterintuitive", "precisio
 
 PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제에 필요한 최소 구조의 JSON을 작성하세요.
 
+중요: JSON 문자열 값 안에 큰따옴표(")를 사용하지 마시오. 필요하면 작은따옴표(')나 다른 표현으로 대체하세요.
 반드시 아래 JSON 형식으로만 응답하세요 (마크다운 코드블록 없이, 다른 텍스트 없이):
 {{
   "topics": [
@@ -21,6 +22,7 @@ PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제
       "knowledge_type": "term",
       "exam_use": ["short", "tf"],
       "source_file": "파일명 또는 unknown",
+      "concept_group": "같은 개념군을 묶는 짧은 이름",
       "reason": "출제 가치 한 문장"
     }}
   ],
@@ -29,7 +31,10 @@ PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제
       "term": "개념명",
       "type": "definition",
       "importance": "high",
-      "difficulty": "easy"
+      "difficulty": "easy",
+      "source_topic": "가장 가까운 토픽명 또는 unknown",
+      "source_file": "파일명 또는 unknown",
+      "concept_group": "같은 개념군을 묶는 짧은 이름 또는 unknown"
     }}
   ],
   "tf_traps": [
@@ -46,16 +51,28 @@ PROMPT_TEMPLATE = """다음 강의자료 텍스트를 분석하여 시험 출제
 규칙:
 - topics: 최소 7개. 강의에서 강조된 섹션·개념·방법론·프레임워크를 개별 토픽으로 작성.
   importance 허용값: core (강의 핵심) / supporting (보조) / detail (세부)
-  knowledge_type 허용값: term (정의·약어) / number (수치·공식) / procedure (절차·단계) / comparison (비교·대비) / causal (인과) / framework (이론·체계) / case (사례·적용)
+  knowledge_type 허용값: term (정의·약어) / number (수식·계산 구조) / procedure (절차·단계) / comparison (비교·대비) / causal (인과) / framework (이론·체계) / case (사례·적용)
   exam_use: 실제로 출제 가능한 문제 유형 선택. 허용값: "short", "tf", "essay", "application"
   difficulty 허용값: easy / medium / hard
   source_file: 강의자료 내 "=== 파일명 ===" 구분자로 식별한 원본 파일명. 구분자가 없거나 알 수 없으면 "unknown".
-- key_concepts: 단답형 출제용 핵심 수치·약어·용어.
+  concept_group: 같은 개념군·출제 범주를 묶는 짧은 이름. 알 수 없으면 "unknown".
+- key_concepts: 단답형 출제용 핵심 약어·용어·정확한 명칭. 지엽적인 수치값 암기는 넣지 말 것.
   type 허용값: definition / term / number / abbreviation / formula / principle
   importance 허용값: high / medium / low
+  source_topic/source_file/concept_group은 가능한 한 채우고, 알 수 없으면 "unknown".
 - tf_traps: 진위형 함정. 없으면 빈 배열.
   type 허용값: misconception (오해) / concept_swap (개념 바꾸기) / counterintuitive (반직관) / precision (정밀도) / fatigue (피로)
   answer: T 또는 F
+
+강의자료:
+{text}"""
+
+_COMPACT_PROMPT = """다음 강의자료를 분석하여 JSON을 출력하세요.
+topics는 핵심 토픽 최대 10개만 포함하고, reason은 한 단어 또는 10자 이내로 작성하세요.
+JSON 문자열 값 안에 큰따옴표(")를 절대 사용하지 마시오.
+마크다운 코드블록 없이 JSON만 출력하세요.
+
+{{"topics":[{{"name":"","importance":"core","difficulty":"medium","knowledge_type":"term","exam_use":["short"],"source_file":"unknown","concept_group":"unknown","reason":""}}],"key_concepts":[{{"term":"","type":"term","importance":"high","difficulty":"medium","source_topic":"unknown","source_file":"unknown","concept_group":"unknown"}}],"tf_traps":[]}}
 
 강의자료:
 {text}"""
@@ -127,6 +144,7 @@ def _normalize_topic(topic: dict) -> dict:
     if "reason" not in topic:
         topic["reason"] = ""
     topic.setdefault("source_file", "unknown")
+    topic.setdefault("concept_group", "unknown")
     return topic
 
 
@@ -137,6 +155,9 @@ def _normalize_concept(concept: dict) -> dict:
         concept["importance"] = "medium"
     if concept.get("difficulty") not in _DIFFICULTY_VALUES:
         concept["difficulty"] = "medium"
+    concept.setdefault("source_topic", "unknown")
+    concept.setdefault("source_file", "unknown")
+    concept.setdefault("concept_group", "unknown")
     return concept
 
 
@@ -172,21 +193,89 @@ def _validate_and_normalize(data: dict) -> dict:
     return data
 
 
+def _strip_code_fence(raw: str) -> str:
+    if "```" in raw:
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+    return raw
+
+
+def _repair_truncated_json(raw: str) -> str | None:
+    """Close unclosed JSON structures caused by output truncation.
+
+    Scans forward tracking bracket/brace/string state. If open structures
+    remain at the end, appends the required closing characters. Returns
+    the repaired string, or None if the input looks unrecoverable (e.g.
+    truncated mid-string with no salvageable content).
+    """
+    stack: list[str] = []
+    in_string = False
+    escape = False
+
+    for ch in raw:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ("{", "["):
+            stack.append(ch)
+        elif ch in ("}", "]"):
+            if stack:
+                stack.pop()
+
+    if in_string:
+        # Truncated mid-string: close the string then close open structures
+        raw = raw + '"'
+
+    if not stack:
+        return raw
+
+    closing = "".join("}" if ch == "{" else "]" for ch in reversed(stack))
+    return raw + closing
+
+
 class TopicExtractorAgent(BaseAgentWorker):
     def __init__(self):
         super().__init__(name="Topic Extractor", task_id="Task 1")
 
+    def _parse_raw(self, raw: str) -> dict:
+        raw = _strip_code_fence(raw)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            repaired = _repair_truncated_json(raw)
+            if repaired and repaired != raw:
+                try:
+                    return json.loads(repaired)
+                except json.JSONDecodeError:
+                    pass
+            raise
+
     def run(self, input_text: str) -> str:
         prompt = PROMPT_TEMPLATE.format(text=input_text)
-        raw = claude_generate_text(prompt)
-        if "```" in raw:
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        raw = claude_generate_text(prompt, max_tokens=16000)
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as e:
+            data = self._parse_raw(raw)
+        except json.JSONDecodeError:
+            # Retry with compact instruction — fewer topics, shorter reasons
+            compact_prompt = _COMPACT_PROMPT.format(text=input_text)
+            try:
+                raw2 = claude_generate_text(compact_prompt, max_tokens=16000)
+                data = self._parse_raw(raw2)
+            except (json.JSONDecodeError, Exception) as e2:
+                raise ValueError(f"Invalid topic extraction JSON: {e2}") from e2
+
+        try:
+            data = _validate_and_normalize(data)
+        except (ValueError, KeyError) as e:
             raise ValueError(f"Invalid topic extraction JSON: {e}") from e
-        data = _validate_and_normalize(data)
         return json.dumps(data, ensure_ascii=False)

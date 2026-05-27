@@ -445,6 +445,11 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fmt = _interpret_format(plan or {})
 
+    # Compute total from questions and inject before cover page is rendered
+    computed_total = sum(q.get("points", 0) for q in questions) if questions else None
+    if computed_total:
+        fmt["total_score"] = computed_total
+
     doc = Document()
     sec0 = doc.sections[0]
     _set_margins(sec0)
@@ -452,11 +457,6 @@ def save_exam_docx(questions: list, output_path: str, plan: dict = None) -> None
 
     _add_cover_page(doc, fmt)
     _add_body_section(doc)
-
-    # Compute total score from questions for cover page override
-    computed_total = sum(q.get("points", 0) for q in questions) if questions else None
-    if computed_total:
-        fmt["total_score"] = computed_total
 
     grouped = _group_by_type(questions)
     total_groups = len(grouped)
