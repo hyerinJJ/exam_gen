@@ -55,6 +55,36 @@ _TRAP_TYPE_TO_TF_TYPE = {
 }
 
 
+def _desired_tf_true_count(n_tf: int) -> int:
+    """진위형 전체 문항에서 의도할 T 정답 수를 계산."""
+    if n_tf < 2:
+        return 0
+    return min(n_tf - 1, max(1, round(n_tf * 0.35)))
+
+
+def _tf_answer_sequence(n_tf: int) -> list[str]:
+    """T/F 정답 방향을 미리 섞은 순서로 만든다."""
+    target_t = _desired_tf_true_count(n_tf)
+    sequence = []
+    made_t = 0
+    for i in range(n_tf):
+        should_have_t = round((i + 1) * target_t / n_tf) if n_tf else 0
+        if made_t < should_have_t:
+            sequence.append("T")
+            made_t += 1
+        else:
+            sequence.append("F")
+    return sequence
+
+
+def _split_tf_traps(tf_traps: list | None) -> dict:
+    queues = {"T": [], "F": []}
+    for trap in tf_traps or []:
+        answer = trap.get("answer", "F")
+        queues["T" if answer == "T" else "F"].append(trap)
+    return queues
+
+
 def _normalize_plan(plan: dict) -> dict:
     result = {}
     for k, v in plan.items():
@@ -230,38 +260,41 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
 
     # 진위형: tf_traps 우선 활용, 소진 후 위치 기반 배분으로 fallback
     if n_tf > 0:
-        n_t = max(1, round(n_tf * 0.35)) if n_tf >= 2 else 1
-        n_t = min(n_t, 4) if n_tf == 10 else n_t
+        answer_slots = _tf_answer_sequence(n_tf)
         n_fatigue = min(2, max(1, n_tf // 5)) if n_tf >= 5 else 0
         tf_pool = sorted_pool("tf")
         _TF_F_TYPES = ["오해 직격", "개념쌍 바꿔치기", "정의 정밀도 확인"]
-        traps_queue = list(tf_traps) if tf_traps else []
+        trap_queues = _split_tf_traps(tf_traps)
+        f_seen = 0
 
-        for i in range(n_tf):
+        for i, intended_answer in enumerate(answer_slots):
             t = pick_balanced(tf_pool, "tf")
             item = make_item("tf", t, t.get("reason", t.get("name", "")))
+            trap = trap_queues[intended_answer].pop(0) if trap_queues[intended_answer] else None
 
-            if traps_queue:
-                trap = traps_queue.pop(0)
+            if trap:
                 trap_type = trap.get("type", "")
                 item["tf_type"] = _TRAP_TYPE_TO_TF_TYPE.get(trap_type, "오해 직격")
-                item["intended_answer"] = trap.get("answer", "F")
+                item["intended_answer"] = intended_answer
                 seed = trap.get("statement_seed", "")
                 if trap_type == "misconception" and seed:
                     item["misconception_hint"] = seed
                 elif trap_type == "concept_swap" and seed:
                     item["concept_pair_hint"] = seed
+                elif trap_type == "counterintuitive" and seed:
+                    item["misconception_hint"] = seed
+            elif intended_answer == "T":
+                item["tf_type"] = "반직관 정답"
+                item["intended_answer"] = "T"
             else:
-                if i >= n_tf - n_fatigue:
+                remaining_f = answer_slots[i:].count("F")
+                if remaining_f <= n_fatigue:
                     item["tf_type"] = "피로 함정"
                     item["intended_answer"] = "F"
-                elif i < n_t:
-                    item["tf_type"] = "반직관 정답"
-                    item["intended_answer"] = "T"
                 else:
-                    f_idx = i - n_t
-                    item["tf_type"] = _TF_F_TYPES[f_idx % len(_TF_F_TYPES)]
+                    item["tf_type"] = _TF_F_TYPES[f_seen % len(_TF_F_TYPES)]
                     item["intended_answer"] = "F"
+                f_seen += 1
             plan.append(item)
 
     return plan

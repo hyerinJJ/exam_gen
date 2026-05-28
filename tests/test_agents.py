@@ -589,6 +589,37 @@ def test_planner_tf_tf_ratio():
     assert t_count <= 4 and f_count >= 6
 
 
+def test_planner_tf_sequence_is_pre_mixed():
+    """planner가 TF 정답방향을 생성 전에 섞인 슬롯으로 만든다."""
+    from agents.planner import _tf_answer_sequence
+    sequence = _tf_answer_sequence(10)
+    assert sequence.count("T") == 4
+    assert sequence.count("F") == 6
+    assert sequence != ["T"] * 4 + ["F"] * 6
+    assert sequence != ["F"] * 6 + ["T"] * 4
+
+
+def test_planner_tf_false_traps_stay_false_slots():
+    """F용 tf_traps를 T 슬롯으로 뒤집지 않는다."""
+    from agents.planner import _build_plan_items
+    topics = [_CONCRETE_TOPIC, _NUMERICAL_TOPIC]
+    tf_traps = [
+        {"type": "misconception", "source_topic": "구체 개념",
+         "statement_seed": f"오해 {i}", "answer": "F", "reason": "오해"}
+        for i in range(10)
+    ]
+    counts = {"단답형": 0, "에세이형": 0, "응용형": 0, "진위형": 10, "난이도": "mixed"}
+    plan = _build_plan_items(topics, [], counts, tf_traps=tf_traps)
+    tf_items = [item for item in plan if item["question_type"] == "tf"]
+    t_items = [item for item in tf_items if item["intended_answer"] == "T"]
+    f_items = [item for item in tf_items if item["intended_answer"] == "F"]
+
+    assert len(t_items) == 4
+    assert len(f_items) == 6
+    assert all("misconception_hint" not in item for item in t_items)
+    assert any(item.get("misconception_hint") for item in f_items)
+
+
 def test_tf_generator_type():
     """TFGenerator 출력의 모든 항목이 type='tf'여야 함."""
     mock_text = json.dumps([
