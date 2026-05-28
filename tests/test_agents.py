@@ -589,6 +589,25 @@ def test_planner_tf_tf_ratio():
     assert t_count <= 4 and f_count >= 6
 
 
+def test_planner_tf_traps_are_balanced_when_all_false():
+    """tf_traps가 모두 F여도 planner가 최종 TF 정답 방향을 균형 있게 만든다."""
+    from agents.planner import _build_plan_items
+    topics = [_CONCRETE_TOPIC, _NUMERICAL_TOPIC]
+    tf_traps = [
+        {"type": "misconception", "source_topic": "구체 개념",
+         "statement_seed": f"오해 {i}", "answer": "F", "reason": "오해"}
+        for i in range(10)
+    ]
+    counts = {"단답형": 0, "에세이형": 0, "응용형": 0, "진위형": 10, "난이도": "mixed"}
+    plan = _build_plan_items(topics, [], counts, tf_traps=tf_traps)
+    tf_items = [item for item in plan if item["question_type"] == "tf"]
+    answers = [item["intended_answer"] for item in tf_items]
+
+    assert answers.count("T") == 4
+    assert answers.count("F") == 6
+    assert any(item["tf_type"] == "반직관 정답" for item in tf_items)
+
+
 def test_tf_generator_type():
     """TFGenerator 출력의 모든 항목이 type='tf'여야 함."""
     mock_text = json.dumps([
