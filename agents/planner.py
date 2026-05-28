@@ -157,7 +157,7 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
             "target_concept": target,
             "difficulty": topic.get("difficulty", "medium"),
             "reason": topic.get("reason", ""),
-            "topic_meta": {k: v for k, v in topic.items() if k not in ("name", "source_file")},
+            "topic_meta": {k: v for k, v in topic.items() if k != "name"},
         }
 
     global_usage = {

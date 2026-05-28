@@ -278,6 +278,9 @@ def _format_plan_items_text(plan_items: list) -> str:
         if item.get("concept_pair_hint"):
             line += f" | 개념쌍: {item['concept_pair_hint']}"
         lines.append(line)
+        evidence = (meta.get("evidence_text") or "").strip()
+        if evidence:
+            lines.append(f"   강의 근거 텍스트:\n{evidence[:1800]}")
     return "\n".join(lines)
 
 
@@ -295,6 +298,8 @@ def _inject_grading_seed(results: list, plan_items: list) -> None:
             q["grading_seed"] = {
                 "answer_direction": item.get("reason", ""),
                 "must_include": [tc] if tc else [],
+                "evidence_text": item.get("topic_meta", {}).get("evidence_text", ""),
+                "source_refs": item.get("topic_meta", {}).get("source_refs", []),
                 "rubric_focus": [],
             }
         elif q_type == "application":
@@ -302,6 +307,8 @@ def _inject_grading_seed(results: list, plan_items: list) -> None:
                 "target_framework": item.get("target_concept", ""),
                 "scenario_mapping": [],
                 "expected_reasoning": item.get("reason", ""),
+                "evidence_text": item.get("topic_meta", {}).get("evidence_text", ""),
+                "source_refs": item.get("topic_meta", {}).get("source_refs", []),
                 "rubric_focus": [],
             }
         elif q_type == "tf":

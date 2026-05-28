@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agents.collector import CollectorAgent
 from agents.topic_extractor import TopicExtractorAgent
+from agents.topic_slicer import attach_topic_evidence
 from agents.planner import PlannerAgent
 from agents.generators import ShortAnswerGenerator, EssayGenerator, ApplicationGenerator, TFGenerator
 from agents.answer_generator import AnswerGeneratorAgent
@@ -277,7 +278,8 @@ def run_pipeline(file_paths: list[str], requirements: str) -> dict:
     print("\n=== [Step 1] 토픽 추출 ===")
     extractor = TopicExtractorAgent()
     topic_data = json.loads(extractor.run(raw_text))
-    topics = topic_data.get("topics", [])
+    topics = attach_topic_evidence(raw_text, topic_data.get("topics", []))
+    topic_data["topics"] = topics
     topic_names = [t.get("name", "") for t in topics]
     print(f"  토픽 {len(topic_names)}개: {', '.join(topic_names)}")
 

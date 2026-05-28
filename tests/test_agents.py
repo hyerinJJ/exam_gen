@@ -157,6 +157,32 @@ def test_topic_concept_group_defaults_to_unknown():
     assert result["topics"][0]["concept_group"] == "unknown"
 
 
+def test_topic_slicer_attaches_relevant_evidence():
+    """raw_text를 파일/페이지 단위로 나누고 topic에 관련 근거 텍스트를 붙인다."""
+    from agents.topic_slicer import attach_topic_evidence
+    raw = (
+        "=== lecture1.pdf ===\n"
+        "[페이지 1]\nWork System Framework는 participants, information, technologies를 포함한다.\n\n"
+        "[페이지 2]\n전혀 다른 내용\n\n"
+        "=== lecture2.pdf ===\n"
+        "[페이지 1]\nScientific Management 내용"
+    )
+    topics = [{
+        "name": "Work System Framework",
+        "source_file": "lecture1.pdf",
+        "concept_group": "work system",
+        "importance": "core",
+        "difficulty": "medium",
+        "knowledge_type": "framework",
+        "exam_use": ["essay", "application"],
+        "reason": "프레임워크 적용",
+    }]
+    result = attach_topic_evidence(raw, topics)
+    assert result[0]["topic_id"] == "topic_1"
+    assert "participants" in result[0]["evidence_text"]
+    assert any("lecture1.pdf" in ref for ref in result[0]["source_refs"])
+
+
 def test_key_concept_source_metadata_defaults_to_unknown():
     """key_concepts에 source metadata가 없으면 기본값을 채워야 함."""
     output = {
@@ -209,14 +235,15 @@ def test_plan_concept_group_balanced_equal_score():
     assert "B1" in topic_names
 
 
-def test_plan_source_file_not_in_topic_meta():
-    """plan_item의 topic_meta에 source_file이 포함되지 않아야 함."""
+def test_plan_keeps_source_evidence_in_topic_meta():
+    """plan_item의 topic_meta에는 답안 근거 검색용 source/evidence가 보존되어야 함."""
     from agents.planner import _build_plan_items
     topic = {"name": "테스트", "importance": "core", "difficulty": "medium",
              "knowledge_type": "framework", "exam_use": ["essay"], "reason": "",
-             "source_file": "secret.pdf"}
+             "source_file": "secret.pdf", "evidence_text": "강의 근거"}
     plan = _build_plan_items([topic], [], {"단답형": 0, "에세이형": 1, "응용형": 0})
-    assert "source_file" not in plan[0]["topic_meta"]
+    assert plan[0]["topic_meta"]["source_file"] == "secret.pdf"
+    assert plan[0]["topic_meta"]["evidence_text"] == "강의 근거"
 
 
 # ── 하위 호환 정규화 테스트 ────────────────────────────────────────────────────
@@ -448,6 +475,8 @@ _SAMPLE_PLAN_ITEMS = [
             "difficulty": "medium",
             "knowledge_type": "term",
             "exam_use": ["short", "tf"],
+            "evidence_text": "학습률은 경사하강법의 업데이트 폭을 조절한다.",
+            "source_refs": ["lecture.pdf [페이지 3]"],
         },
     }
 ]
@@ -473,6 +502,8 @@ def test_short_generator_prompt_contains_metadata():
     assert "수치값 암기 문제는 단답형으로 출제하지 마세요" in prompt_text
     assert '"answer": "..."' in prompt_text
     assert "문제 문장에 정확히 대응해야 합니다" in prompt_text
+    assert "강의 근거 텍스트" in prompt_text
+    assert "업데이트 폭" in prompt_text
     assert "같은 개념군" in prompt_text
 
 
@@ -740,6 +771,27 @@ def test_short_generator_uses_generated_answer_for_grading_seed():
     assert seed.get("expected_answer") == "learning rate"
 
 
+def test_essay_generator_passes_evidence_to_grading_seed():
+    """EssayGenerator는 topic evidence를 답안생성용 grading_seed에 보존해야 함."""
+    essay_plan = [{
+        **_SAMPLE_PLAN_ITEMS[0],
+        "question_type": "essay",
+        "topic_meta": {
+            **_SAMPLE_PLAN_ITEMS[0]["topic_meta"],
+            "knowledge_type": "framework",
+        },
+    }]
+    mock_text = json.dumps([{"id": "Q1", "type": "essay", "question": "설명하시오."}])
+    with patch("agents.generators.claude_generate_text", return_value=mock_text):
+        from agents.generators import EssayGenerator
+        agent = EssayGenerator()
+        result = json.loads(agent.run(json.dumps({"plan_items": essay_plan})))
+
+    seed = result[0].get("grading_seed", {})
+    assert "업데이트 폭" in seed.get("evidence_text", "")
+    assert seed.get("source_refs") == ["lecture.pdf [페이지 3]"]
+
+
 def test_tf_answer_generator_uses_seed_skips_model():
     """TF AnswerGenerator가 grading_seed.expected_answer 있으면 모델 재판별을 하지 않아야 함."""
     from agents.answer_generator import AnswerGeneratorAgent
@@ -761,11 +813,16 @@ def test_application_answer_generator_injects_seed_context():
     q = {"id": "Q1", "type": "application",
          "question": "Work System Framework를 적용하여 분석하시오.",
          "grading_seed": {"target_framework": "Work System Framework",
-                          "expected_reasoning": "기술·인간·조직 세 축으로 분석"}}
+                          "expected_reasoning": "기술·인간·조직 세 축으로 분석",
+                          "evidence_text": "participants, information, technologies를 사례에 대응",
+                          "source_refs": ["M1.3.pdf [페이지 2]"]}}
 
     seed_ctx = _seed_context(q["grading_seed"])
     assert "Work System Framework" in seed_ctx
     assert "기술·인간·조직" in seed_ctx
+    assert "강의 근거 텍스트" in seed_ctx
+    assert "participants" in seed_ctx
+    assert "M1.3.pdf" in seed_ctx
 
 
 def test_short_answer_generator_uses_seed():

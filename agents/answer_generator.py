@@ -30,6 +30,8 @@ ESSAY_PROMPT = f"""{_CORE_PRINCIPLE}
 {_NO_MARKDOWN}
 
 문제 유형에 따라 아래 형식 중 하나만 사용하라. 서론·결론·도입부 금지.
+- 출제 의도에 강의 근거 텍스트가 있으면 그 텍스트의 개념명, 프레임워크 구성요소, 절차명을 우선 사용하라.
+- "수업에서 배운 프레임워크"처럼 일반적으로 쓰지 말고 구체적인 명칭과 요소를 적어라.
 - 설명/서술 요구 → 핵심 내용만 3~5문장
 - 비교/차이점 요구 → 비교 항목과 차이만
 - 단계/절차 요구 → 번호 붙여 각 단계 1~2문장
@@ -43,6 +45,8 @@ APPLICATION_PROMPT = f"""{_CORE_PRINCIPLE}
 
 답안 작성 원칙:
 - 답안의 핵심은 반드시 수업에서 배운 개념, 이론, 프레임워크를 시나리오에 적용하는 것이다.
+- 출제 의도에 강의 근거 텍스트가 있으면 그 텍스트의 구체적인 개념명과 프레임워크 요소를 우선 사용하라.
+- "수업에서 적용한 프레임워크"처럼 추상적으로 쓰지 말고 프레임워크 이름과 구성요소를 명시하라.
 - 참고 자료(arXiv, Google)는 현실 사례나 배경 맥락 확인용으로만 참고하라.
   참고 자료에서만 나오는 내용을 답안의 근거로 쓰지 마라.
 - 시나리오 및 질문 재서술 금지.
@@ -147,6 +151,10 @@ def _seed_context(seed: dict) -> str:
         parts.append(f"반드시 포함: {', '.join(seed['must_include'])}")
     if seed.get("rubric_focus"):
         parts.append(f"채점 포인트: {', '.join(seed['rubric_focus'])}")
+    if seed.get("source_refs"):
+        parts.append(f"강의 근거 위치: {', '.join(seed['source_refs'])}")
+    if seed.get("evidence_text"):
+        parts.append(f"강의 근거 텍스트:\n{seed['evidence_text'][:2400]}")
     for m in seed.get("scenario_mapping", []):
         parts.append(f"시나리오↔개념: {m.get('scenario_element', '')} → {m.get('course_concept', '')}")
     return "\n".join(parts)
