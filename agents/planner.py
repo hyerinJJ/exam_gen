@@ -55,38 +55,6 @@ _TRAP_TYPE_TO_TF_TYPE = {
 }
 
 
-def _desired_tf_true_count(n_tf: int) -> int:
-    """진위형 전체 문항에서 의도할 T 정답 수를 계산."""
-    if n_tf < 2:
-        return 0
-    return min(n_tf - 1, max(1, round(n_tf * 0.35)))
-
-
-def _balance_tf_intended_answers(tf_items: list, target_t: int) -> None:
-    """tf_traps가 모두 F여도 최종 plan의 T/F 방향을 균형 있게 보정."""
-    if not tf_items:
-        return
-
-    def t_count() -> int:
-        return sum(1 for item in tf_items if item.get("intended_answer") == "T")
-
-    for item in tf_items:
-        if t_count() >= target_t:
-            break
-        if item.get("tf_type") == "피로 함정":
-            continue
-        if item.get("intended_answer") != "T":
-            item["intended_answer"] = "T"
-            item["tf_type"] = "반직관 정답"
-
-    for item in reversed(tf_items):
-        if t_count() <= target_t:
-            break
-        if item.get("intended_answer") == "T":
-            item["intended_answer"] = "F"
-            item["tf_type"] = "오해 직격"
-
-
 def _normalize_plan(plan: dict) -> dict:
     result = {}
     for k, v in plan.items():
@@ -262,7 +230,8 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
 
     # 진위형: tf_traps 우선 활용, 소진 후 위치 기반 배분으로 fallback
     if n_tf > 0:
-        n_t = _desired_tf_true_count(n_tf)
+        n_t = max(1, round(n_tf * 0.35)) if n_tf >= 2 else 1
+        n_t = min(n_t, 4) if n_tf == 10 else n_t
         n_fatigue = min(2, max(1, n_tf // 5)) if n_tf >= 5 else 0
         tf_pool = sorted_pool("tf")
         _TF_F_TYPES = ["오해 직격", "개념쌍 바꿔치기", "정의 정밀도 확인"]
@@ -294,10 +263,6 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
                     item["tf_type"] = _TF_F_TYPES[f_idx % len(_TF_F_TYPES)]
                     item["intended_answer"] = "F"
             plan.append(item)
-
-        # tf_traps의 answer 필드가 모두 F일 수 있으므로 T/F 비율 보정
-        tf_in_plan = [it for it in plan if it.get("question_type") == "tf"]
-        _balance_tf_intended_answers(tf_in_plan, n_t)
 
     return plan
 
