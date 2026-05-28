@@ -396,18 +396,18 @@ def test_plan_procedure_goes_to_application():
     assert plan[0]["topic_name"] == "절차 개념"
 
 
-def test_plan_uses_key_concepts_for_short_target():
-    """단답형 plan_item의 target_concept은 key_concept에서 가져와야 함."""
+def test_plan_uses_topic_for_short_target():
+    """단답형 target_concept은 정답 seed가 아니라 문제 생성용 topic 힌트여야 함."""
     from agents.planner import _build_plan_items
     topics = [_NUMERICAL_TOPIC]
     key_concepts = [{"term": "핵심 용어", "type": "term", "importance": "high", "difficulty": "medium"}]
     counts = {"단답형": 1, "에세이형": 0, "응용형": 0, "난이도": "mixed"}
     plan = _build_plan_items(topics, key_concepts, counts)
-    assert plan[0]["target_concept"] == "핵심 용어"
+    assert plan[0]["target_concept"] == "수식 개념"
 
 
-def test_short_targets_use_key_concept_diversity():
-    """단답형 target_concept가 같은 concept_group에만 몰리지 않아야 함."""
+def test_short_targets_do_not_pull_unrelated_key_concepts():
+    """단답형 정답은 generator가 만들므로 planner가 key_concepts를 정답처럼 끌어오지 않는다."""
     from agents.planner import _build_plan_items
     topics = [{**_NUMERICAL_TOPIC, "concept_group": "topic_group", "source_file": "file.pdf"}]
     key_concepts = [
@@ -421,7 +421,7 @@ def test_short_targets_use_key_concept_diversity():
     counts = {"단답형": 2, "에세이형": 0, "응용형": 0, "난이도": "mixed"}
     plan = _build_plan_items(topics, key_concepts, counts)
     targets = [item["target_concept"] for item in plan]
-    assert "B1" in targets
+    assert targets == ["수식 개념", "수식 개념"]
 
 
 def test_core_topic_survives_diversity_penalty():
@@ -455,7 +455,7 @@ _SAMPLE_PLAN_ITEMS = [
 
 def _captured_prompt(generator_cls, plan_items, module_path):
     """mock으로 generator를 실행하고 LLM에 전달된 프롬프트를 반환."""
-    mock_text = json.dumps([{"id": "Q1", "type": "short", "question": "테스트 문제?"}])
+    mock_text = json.dumps([{"id": "Q1", "type": "short", "question": "테스트 문제?", "answer": "테스트 답"}])
     with patch(f"{module_path}.claude_generate_text", return_value=mock_text) as mock_claude:
         agent = generator_cls()
         agent.run(json.dumps({"plan_items": plan_items}))
@@ -471,6 +471,8 @@ def test_short_generator_prompt_contains_metadata():
     # knowledge_type 정보와 단답형 수치 암기 금지 기준이 프롬프트에 포함되어야 함
     assert "term" in prompt_text
     assert "수치값 암기 문제는 단답형으로 출제하지 마세요" in prompt_text
+    assert '"answer": "..."' in prompt_text
+    assert "문제 문장에 정확히 대응해야 합니다" in prompt_text
     assert "같은 개념군" in prompt_text
 
 
@@ -708,9 +710,10 @@ _APP_PLAN_ITEMS = [
 
 
 def test_tf_generator_preserves_grading_seed():
-    """TFGenerator가 plan_items의 intended_answer를 grading_seed.expected_answer로 보존해야 함."""
+    """TFGenerator가 생성 결과의 answer를 grading_seed.expected_answer로 보존해야 함."""
     mock_text = json.dumps([{"id": "Q1", "type": "tf",
-                             "question": "비지도학습은 레이블이 필요하다. (T/F)"}])
+                             "question": "비지도학습은 레이블이 필요하다. (T/F)",
+                             "answer": "F"}])
     with patch("agents.generators.claude_generate_text", return_value=mock_text):
         from agents.generators import TFGenerator
         agent = TFGenerator()
@@ -720,6 +723,21 @@ def test_tf_generator_preserves_grading_seed():
     assert seed.get("expected_answer") == "F"
     assert seed.get("trap") == "오해 직격"
     assert "reason" in seed
+
+
+def test_short_generator_uses_generated_answer_for_grading_seed():
+    """ShortAnswerGenerator는 key_concept가 아니라 생성된 answer를 grading_seed에 넣어야 함."""
+    mock_text = json.dumps([{"id": "Q1", "type": "short",
+                             "question": "학습률을 뜻하는 영어 용어는?",
+                             "answer": "learning rate"}])
+    with patch("agents.generators.claude_generate_text", return_value=mock_text):
+        from agents.generators import ShortAnswerGenerator
+        agent = ShortAnswerGenerator()
+        result = json.loads(agent.run(json.dumps({"plan_items": _SAMPLE_PLAN_ITEMS})))
+
+    seed = result[0].get("grading_seed", {})
+    assert result[0]["answer"] == "learning rate"
+    assert seed.get("expected_answer") == "learning rate"
 
 
 def test_tf_answer_generator_uses_seed_skips_model():
@@ -888,6 +906,8 @@ def test_essay_rubric_prompt_uses_subpoints():
     assert "총점 25점. 반드시 소문항별로 나누어" in captured["prompt"]
     assert "(1) (15점):" in captured["prompt"]
     assert "(2) (10점):" in captured["prompt"]
+    assert "각 소문항 안의 포인트 점수 합은 반드시 해당 소문항 배점과 정확히 같아야 합니다" in captured["prompt"]
+    assert "0점, 소수점, 소문항 배점을 넘는 합계는 절대 쓰지 마세요" in captured["prompt"]
 
 
 # ── application answer generator 검색 재호출 방지 테스트 ──────────────────────

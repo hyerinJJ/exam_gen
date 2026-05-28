@@ -157,10 +157,18 @@ def _point_instruction(q: dict) -> str:
     subpoints = q.get("subpoints") or []
     if q.get("type") in ("essay", "application") and len(subpoints) > 1:
         lines = [f"총점 {total_pts}점. 반드시 소문항별로 나누어 아래 형식 그대로 출력하세요:"]
+        lines.append("채점 포인트 점수 규칙: 각 소문항 안의 포인트 점수 합은 반드시 해당 소문항 배점과 정확히 같아야 합니다.")
+        lines.append("각 포인트 점수는 1점 이상의 정수만 사용하세요. 0점, 소수점, 소문항 배점을 넘는 합계는 절대 쓰지 마세요.")
         for idx, pt in enumerate(subpoints, start=1):
             lines.append(f"({idx}) ({pt}점): [핵심 포인트 1~2개. 합계 정확히 {pt}점]")
         lines.append("각 소문항당 포인트는 1~2개로 간결하게. 점수는 정수.")
         return "\n".join(lines)
+    if q.get("type") in ("essay", "application"):
+        return (
+            f"합계 {total_pts}점. 핵심 포인트에 높은 점수. 점수는 정수만.\n"
+            "채점 포인트 점수 규칙: 포인트 점수 합은 반드시 총점과 정확히 같아야 합니다. "
+            "각 포인트 점수는 1점 이상의 정수만 사용하세요. 0점, 소수점, 총점을 넘는 합계는 절대 쓰지 마세요."
+        )
     return f"합계 {total_pts}점. 핵심 포인트에 높은 점수. 점수는 정수만."
 
 

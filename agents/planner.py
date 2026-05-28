@@ -238,13 +238,11 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
 
     plan = []
 
-    # 단답형: key_concept을 target으로, topic을 맥락으로 사용
+    # 단답형: topic 자체를 출제 맥락으로 주고, 실제 정답은 문제 생성기가 함께 작성한다.
     short_pool = sorted_pool("short_answer")
     for i in range(n_short):
         t = pick_balanced(short_pool, "short_answer")
-        kc = pick_key_concept(key_concepts)
-        target = kc["term"] if kc else t.get("name", "")
-        plan.append(make_item("short_answer", t, target))
+        plan.append(make_item("short_answer", t, t.get("name", "")))
 
     # 서술형: 점수 높은 토픽 순으로 배치
     essay_pool = sorted_pool("essay")
