@@ -34,6 +34,7 @@ PDF, PPT, 영상, 텍스트 파일을 읽고 다음 파일을 만듭니다.
 |---|---|
 | `input/` | 강의자료와 시험 요구사항을 넣는 곳 |
 | `input/requirements.txt` | 어떤 시험을 만들지 적는 파일 |
+| `package_requirements.txt` | Python 패키지 설치 목록 |
 | `output/` | 완성된 시험지와 모범답안이 나오는 곳 |
 
 코드를 고치지 않고 사용하는 사람은 보통 `input/`과 `output/`만 보면 됩니다.
@@ -61,7 +62,7 @@ python --version
 프로젝트 폴더에서 아래 명령을 실행합니다.
 
 ```bash
-pip install -r requirements.txt
+pip install -r package_requirements.txt
 ```
 
 ### 3.3 API 키 준비
@@ -185,7 +186,7 @@ PDF나 PPT만 사용할 경우에는 이 단계가 필요 없습니다.
 
 ```text
 input/
-├── requirements.txt
+├── requirements.txt  ← 시험 요구사항 파일
 ├── lecture1.pdf
 ├── lecture2.pdf
 └── lecture3.pptx
@@ -346,7 +347,7 @@ Gemini 쪽에서 오류가 나면 시험 계획, 응용형 문제, 답안 생성
 
 ### input 폴더에 뭘 넣어야 하나요
 
-강의자료와 `requirements.txt`를 넣으면 됩니다.
+강의자료와 `input/requirements.txt`를 넣으면 됩니다.
 
 예:
 
@@ -417,7 +418,7 @@ git status
 - `input/`에 넣은 강의자료는 저작권이 있을 수 있으니 외부에 올리지 마세요.
 - AI가 만든 시험과 답안은 반드시 사람이 한 번 확인해야 합니다.
 - API 사용량에 따라 비용이 발생할 수 있습니다.
-- 생성 결과가 마음에 들지 않으면 `requirements.txt`의 요구사항을 더 구체적으로 적어 보세요.
+- 생성 결과가 마음에 들지 않으면 `input/requirements.txt`의 요구사항을 더 구체적으로 적어 보세요.
 
 ---
 
