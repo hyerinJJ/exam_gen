@@ -698,7 +698,7 @@ def test_quality_reviewer_tf_criteria():
     from agents.quality_reviewer import REVIEW_PROMPT
     assert "진위형" in REVIEW_PROMPT
     assert "(T/F)" in REVIEW_PROMPT
-    assert "단일 사실" in REVIEW_PROMPT
+    assert "별개 개념" in REVIEW_PROMPT
 
 
 def test_file_writers_tf_type():
@@ -960,11 +960,12 @@ def test_essay_rubric_prompt_uses_subpoints():
         agent._client = MagicMock()
         agent._generate_rubric(q, "모범답안")
 
-    assert "총점 25점. 반드시 소문항별로 나누어" in captured["prompt"]
+    assert "총점 25점. 각 소문항을 아래 형식 그대로 출력하세요" in captured["prompt"]
     assert "(1) (15점):" in captured["prompt"]
     assert "(2) (10점):" in captured["prompt"]
-    assert "각 소문항 안의 포인트 점수 합은 반드시 해당 소문항 배점과 정확히 같아야 합니다" in captured["prompt"]
-    assert "0점, 소수점, 소문항 배점을 넘는 합계는 절대 쓰지 마세요" in captured["prompt"]
+    assert "각 소문항은 반드시 채점 포인트 2개 이상" in captured["prompt"]
+    assert "각 소문항 내 포인트 점수 합 = 소문항 배점" in captured["prompt"]
+    assert "소수점 절대 금지" in captured["prompt"]
 
 
 # ── application answer generator 검색 재호출 방지 테스트 ──────────────────────

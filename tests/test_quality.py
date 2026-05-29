@@ -428,6 +428,28 @@ def test_q0_issues_are_skipped_in_apply_fixes():
     mock_refine.assert_not_called()
 
 
+def test_refiner_runs_single_api_call_without_self_eval():
+    """RefinerAgent는 자기평가 API 호출 없이 수정 API 1회만 수행한다."""
+    from agents.refiner import RefinerAgent
+
+    q = {"id": "Q1", "type": "short", "question": "기존 문제?"}
+    refined = {"id": "Q1", "type": "short", "question": "수정 문제?"}
+
+    def fake_retry(fn):
+        return fn()
+
+    with patch("agents.refiner.retry_call", side_effect=fake_retry):
+        agent = RefinerAgent.__new__(RefinerAgent)
+        agent._client = MagicMock()
+        agent._client.models.generate_content.return_value = MagicMock(
+            text=json.dumps(refined, ensure_ascii=False)
+        )
+        result = json.loads(agent.run(json.dumps({"problem": q, "feedback": "더 명확하게"})))
+
+    assert result == refined
+    assert agent._client.models.generate_content.call_count == 1
+
+
 # ── _find_plan_item 테스트 ────────────────────────────────────────────────────
 
 def test_find_plan_item_by_q1():

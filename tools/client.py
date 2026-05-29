@@ -32,7 +32,7 @@ def retry_call(fn, max_retries: int = 5, base_delay: int = 60):
                 raise  # 인증(401/403), 잘못된 요청(400) 등은 즉시 실패
             if attempt < max_retries - 1:
                 wait = _parse_retry_delay(e, fallback=base_delay * (attempt + 1))
-                print(f"[retry] API 오류({code}), {wait}초 후 재시도... ({attempt + 1}/{max_retries})")
+                print(f"[Gemini API] 오류({code}), {wait}초 후 재시도... ({attempt + 1}/{max_retries})")
                 time.sleep(wait)
             else:
                 raise

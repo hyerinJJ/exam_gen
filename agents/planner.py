@@ -40,10 +40,10 @@ _KEY_FRAGMENTS = {
 
 # knowledge_type 유형별 친화도 (문제 유형 → 적합한 knowledge_type 집합)
 _TYPE_AFFINITY = {
-    "short_answer": {"term"},
+    "short_answer": {"term", "number"},
     "tf": {"term", "comparison", "causal", "procedure"},
-    "essay": {"number", "comparison", "causal", "framework"},
-    "application": {"framework", "case", "procedure"},
+    "essay": {"term", "number", "comparison", "causal", "framework", "procedure", "case"},
+    "application": {"framework", "case", "procedure", "causal", "comparison"},
 }
 
 _TRAP_TYPE_TO_TF_TYPE = {
@@ -103,10 +103,10 @@ def _score_topic(topic: dict, qtype: str) -> float:
     imp = topic.get("importance", "supporting")
     diff = topic.get("difficulty", "medium")
 
-    # exam_use 직접 일치: 해당 유형이 exam_use 리스트에 있으면 높은 기본 점수
+    # exam_use 직접 일치: 해당 유형이 exam_use 리스트에 있으면 기본 점수 우대
     type_short = {"short_answer": "short", "tf": "tf", "essay": "essay", "application": "application"}
     use_key = type_short.get(qtype, qtype)
-    base = 0.8 if use_key in exam_use else 0.3
+    base = 0.65 if use_key in exam_use else 0.42
 
     # knowledge_type 친화도 보너스
     affinity = _TYPE_AFFINITY.get(qtype, set())
@@ -182,11 +182,11 @@ def _build_plan_items(topics: list, key_concepts: list, counts: dict,
                 sf = t.get("source_file", "unknown")
                 penalty = (
                     0.25 * _usage(global_usage["topic_name"], topic_name)
-                    + 0.12 * _usage(global_usage["concept_group"], concept_group)
-                    + 0.12 * _usage(global_usage["source_topic"], source_topic)
+                    + 0.20 * _usage(global_usage["concept_group"], concept_group)
+                    + 0.15 * _usage(global_usage["source_topic"], source_topic)
                     + 0.04 * _usage(global_usage["knowledge_type"], knowledge_type)
-                    + 0.05 * _usage(global_usage["source_file"], sf)
-                    + 0.03 * _usage(type_counter, sf)
+                    + 0.08 * _usage(global_usage["source_file"], sf)
+                    + 0.05 * _usage(type_counter, sf)
                 )
                 return _score_topic(t, qtype) - penalty
             chosen = max(pool, key=adjusted)

@@ -207,13 +207,40 @@ def _strip_tf_marker(text: str) -> str:
     return _TF_MARKER_RE.sub("", text or "").strip()
 
 
+_SUB_NUM_RE = re.compile(r"^\(([0-9]+)\)")
+
+
 def _question_parts(text: str) -> list[str]:
-    """시나리오/지시문과 (1)(2)(3) 소문항을 별도 문단으로 나눈다."""
+    """시나리오/지시문과 (1)(2)(3) 소문항을 별도 문단으로 나눈다.
+
+    (N) 번호가 순증하는 경우만 새 소문항으로 인정한다.
+    번호가 역행하면 본문 내 참조 표현으로 보고 이전 파트에 합친다.
+    """
     cleaned = re.sub(r"\n{2,}", "\n", text or "").strip()
     if not cleaned:
         return []
     raw_parts = [p.strip() for p in _SUBQUESTION_RE.split(cleaned) if p.strip()]
-    return raw_parts or [cleaned]
+    if len(raw_parts) <= 1:
+        return raw_parts or [cleaned]
+
+    merged: list[str] = []
+    last_num = 0
+    for part in raw_parts:
+        m = _SUB_NUM_RE.match(part)
+        if m:
+            n = int(m.group(1))
+            if n > last_num:
+                merged.append(part)
+                last_num = n
+            else:
+                # 번호가 역행 → 이전 소문항 본문의 참조 표현으로 병합
+                if merged:
+                    merged[-1] = merged[-1] + " " + part
+                else:
+                    merged.append(part)
+        else:
+            merged.append(part)
+    return merged or [cleaned]
 
 
 def _add_question_text(doc: Document, text: str, subpoints: list = None):
